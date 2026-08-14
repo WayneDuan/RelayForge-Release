@@ -26,9 +26,7 @@ RelayForge 是我们维护的转发控制面板，面向自有节点、隧道和
 使用安装脚本：
 
 ```bash
-curl -fsSL https://github.com/WayneDuan/RelayForge-Release/releases/latest/download/panel_install.sh -o panel_install.sh
-chmod +x panel_install.sh
-./panel_install.sh
+curl -fsSL https://github.com/WayneDuan/RelayForge-Release/releases/latest/download/panel_install.sh | bash
 ```
 
 安装脚本会把所有部署文件集中保存到 `/opt/relayforge`，包括 `docker-compose.yml`、`gost.sql`、`.env`、管理脚本和数据库备份。安装完成后可使用以下命令：
