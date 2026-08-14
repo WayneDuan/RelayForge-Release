@@ -136,6 +136,18 @@ RelayForge 支持多层级的流量控制：
 
 对于多人共享节点、按资源分配或长期运行的服务，可以更加清楚地控制带宽和流量使用。
 
+### 一键部署，快速上线
+
+面板支持一条命令完成部署：
+
+~~~bash
+curl -fsSL https://github.com/WayneDuan/RelayForge-Release/releases/latest/download/panel_install.sh | bash
+~~~
+
+安装脚本会自动完成 Docker Compose 配置、数据库初始化、前后端镜像拉取和管理员账号创建。安装过程中只需要设置访问端口和管理员密码，完成后即可打开面板使用。
+
+节点接入也由面板自动生成 Linux 和 Windows 安装命令，复制到目标机器执行即可。
+
 ---
 
 ## 一个典型使用流程
@@ -237,7 +249,26 @@ RelayForge 适用于自有或明确授权的网络环境。
 
 ## 开始使用
 
-RelayForge 支持通过 Docker Compose 快速部署，也支持使用安装脚本完成面板和节点安装。
+### 面板一键部署
+
+在一台已安装 Docker 的服务器上执行：
+
+~~~bash
+curl -fsSL https://github.com/WayneDuan/RelayForge-Release/releases/latest/download/panel_install.sh | bash
+~~~
+
+脚本会自动完成：
+
+- 检测 IPv4/IPv6 环境并选择对应配置。
+- 拉取 RelayForge 前端、后端和 MySQL 镜像。
+- 初始化数据库结构和管理员账号。
+- 保存部署配置并启动全部服务。
+
+部署完成后，打开服务器显示的面板地址即可开始接入节点。
+
+### 节点快速接入
+
+在面板中创建节点，复制生成的 Linux 或 Windows 安装命令，在目标机器执行即可。Agent 安装完成后会自动连接面板并上报节点状态。
 
 获取部署文件：
 
