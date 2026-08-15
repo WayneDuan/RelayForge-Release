@@ -1,5 +1,5 @@
 # 多阶段构建 - 构建阶段
-FROM node:20.19.0 AS builder
+FROM node:26.7.0 AS builder
 
 WORKDIR /app
 
