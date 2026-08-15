@@ -70,10 +70,9 @@ jobs:
               fi
             fi
           fi
-          expected_tag="\${RELAYFORGE_VERSION:-${VERSION}}"
           for compose_file in docker-compose-v4.yml docker-compose-v6.yml; do
-            grep -Fq "wayneduan/relayforge-backend:${expected_tag}" "$compose_file"
-            grep -Fq "wayneduan/relayforge-frontend:${expected_tag}" "$compose_file"
+            grep -Fq 'wayneduan/relayforge-backend:${RELAYFORGE_VERSION:-' "$compose_file"
+            grep -Fq 'wayneduan/relayforge-frontend:${RELAYFORGE_VERSION:-' "$compose_file"
           done
 
           echo "should_build=false" >> "$GITHUB_OUTPUT"
@@ -324,6 +323,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Render versioned Compose assets
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.check-version.outputs.version }}"
+          for compose_file in docker-compose-v4.yml docker-compose-v6.yml; do
+            sed -E -i.bak 's#\$\{RELAYFORGE_VERSION:-[^}]+\}#${RELAYFORGE_VERSION:-'"$VERSION"'}#g' "$compose_file"
+            rm -f "$compose_file.bak"
+          done
+
       - name: Download GOST AMD64 binary
         uses: actions/download-artifact@v8
         with:
@@ -467,6 +475,15 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Render versioned Compose assets
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.check-version.outputs.version }}"
+          for compose_file in docker-compose-v4.yml docker-compose-v6.yml; do
+            sed -E -i.bak 's#\$\{RELAYFORGE_VERSION:-[^}]+\}#${RELAYFORGE_VERSION:-'"$VERSION"'}#g' "$compose_file"
+            rm -f "$compose_file.bak"
+          done
 
       - name: Generate release notes
         run: bash ./.github/generate-release-notes.sh "${{ needs.check-version.outputs.version }}" ./release-notes.md
