@@ -281,27 +281,27 @@ app.MapPost("/api/v1/node/check-status", async (JsonElement request, HttpContext
 
 app.MapPost("/api/v1/xui/list", async (HttpContext context, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out var user, out var error)) return error!;
     return await app.Services.GetRequiredService<XuiIntegrationService>().ListConnectionsAsync(user!, ct);
 });
 app.MapPost("/api/v1/xui/inbounds", async (HttpContext context, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out var user, out var error)) return error!;
     return await app.Services.GetRequiredService<XuiIntegrationService>().ListInboundsAsync(user!, ct);
 });
 app.MapPost("/api/v1/xui/create", async (XuiConnectionRequest request, HttpContext context, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out var user, out var error)) return error!;
     return await app.Services.GetRequiredService<XuiIntegrationService>().CreateAsync(request, user!, ct);
 });
 app.MapPost("/api/v1/xui/sync", async (XuiSyncRequest request, HttpContext context, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out var user, out var error)) return error!;
     return await app.Services.GetRequiredService<XuiIntegrationService>().SyncAsync(request.Id, user!, ct);
 });
 app.MapPost("/api/v1/xui/delete", async (IdRequest request, HttpContext context, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out var user, out var error)) return error!;
     return await app.Services.GetRequiredService<XuiIntegrationService>().DeleteAsync(request.Id, user!, ct);
 });
 
@@ -360,7 +360,7 @@ app.MapPost("/api/v1/tunnel/update", async (TunnelUpdateRequest request, HttpCon
 app.MapPost("/api/v1/tunnel/get", async (IdRequest request, HttpContext context, Db db, CancellationToken ct) =>
 {
     if (!TryUser(context, app.Services, out var user, out var error)) return error!;
-    var rows = await db.QueryAsync("SELECT t.*,n.ip in_ip,n.port_sta,n.port_end,o.ip out_ip,tf.tunnel_in_flow,tf.tunnel_out_flow FROM tunnel t LEFT JOIN node n ON n.id=t.in_node_id LEFT JOIN node o ON o.id=t.out_node_id LEFT JOIN (SELECT tunnel_id,SUM(in_flow) tunnel_in_flow,SUM(out_flow) tunnel_out_flow FROM `forward` GROUP BY tunnel_id) tf ON tf.tunnel_id=t.id WHERE t.id=@id", Domain.Params(("id", request.Id)), ct);
+    var rows = await db.QueryAsync("SELECT t.*,n.ip in_ip,n.port_sta,n.port_end,o.ip out_ip,tf.tunnel_in_flow,tf.tunnel_out_flow FROM tunnel t LEFT JOIN node n ON n.id=t.in_node_id LEFT JOIN node o ON o.id=t.out_node_id LEFT JOIN (SELECT tunnel_id,SUM(in_flow) tunnel_in_flow,SUM(out_flow) tunnel_out_flow FROM `forward` GROUP BY tunnel_id) tf ON tf.tunnel_id=t.id WHERE t.id=@id AND (@admin=1 OR EXISTS (SELECT 1 FROM user_tunnel ut WHERE ut.tunnel_id=t.id AND ut.user_id=@user AND ut.status=1))", Domain.Params(("id", request.Id), ("admin", Domain.IsAdmin(user!) ? 1 : 0), ("user", user!.Id)), ct);
     return rows.Count == 0 ? Api.Error("tunnel not found") : Api.Ok(Domain.Tunnel(rows[0]));
 });
 
@@ -421,18 +421,18 @@ app.MapPost("/api/v1/forward/list", async (HttpContext context, Db db, Cancellat
 
 app.MapPost("/api/v1/forward/create", async (ForwardRequest request, HttpContext context, Db db, NodeGateway gateway, XuiIntegrationService xui, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out var user, out var error)) return error!;
     var result = await ForwardOperations.CreateAsync(request, user!, db, gateway, xui, ct);
     return result;
 });
 app.MapPost("/api/v1/forward/update", async (ForwardUpdateRequest request, HttpContext context, Db db, NodeGateway gateway, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out var user, out var error)) return error!;
     return await ForwardOperations.UpdateAsync(request, user!, db, gateway, ct);
 });
 app.MapPost("/api/v1/forward/delete", async (IdRequest request, HttpContext context, Db db, NodeGateway gateway, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out var user, out var error)) return error!;
     return await ForwardOperations.DeleteAsync(request.Id, user!, db, gateway, false, ct);
 });
 app.MapPost("/api/v1/forward/force-delete", async (IdRequest request, HttpContext context, Db db, CancellationToken ct) =>
@@ -445,16 +445,16 @@ app.MapPost("/api/v1/forward/pause", async (IdRequest request, HttpContext conte
 app.MapPost("/api/v1/forward/resume", async (IdRequest request, HttpContext context, Db db, NodeGateway gateway, CancellationToken ct) => await ForwardOperations.ChangeStatusAsync(request.Id, context, db, gateway, 1, "ResumeService", ct));
 app.MapPost("/api/v1/forward/update-order", async (JsonElement request, HttpContext context, Db db, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!TryAdmin(context, app.Services, out _, out var error)) return error!;
     if (!request.TryGetProperty("forwards", out var forwards)) return Api.Error("forwards is required");
-    foreach (var item in forwards.EnumerateArray()) await db.ExecuteAsync("UPDATE `forward` SET inx=@inx WHERE id=@id AND (@admin=1 OR user_id=@user)", Domain.Params(("inx", item.GetProperty("inx").GetInt32()), ("id", item.GetProperty("id").GetInt64()), ("admin", Domain.IsAdmin(user!) ? 1 : 0), ("user", user!.Id)), ct);
+    foreach (var item in forwards.EnumerateArray()) await db.ExecuteAsync("UPDATE `forward` SET inx=@inx WHERE id=@id", Domain.Params(("inx", item.GetProperty("inx").GetInt32()), ("id", item.GetProperty("id").GetInt64())), ct);
     return Api.Ok(null, "order updated");
 });
 app.MapPost("/api/v1/forward/diagnose", async (DiagnoseRequest request, HttpContext context, Db db, NodeGateway gateway, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!RequireAdmin(context, app.Services, out var error)) return error!;
     var rows = await db.QueryAsync("SELECT f.*,t.type,t.in_node_id,t.out_node_id FROM `forward` f JOIN tunnel t ON t.id=f.tunnel_id WHERE f.id=@id", Domain.Params(("id", request.ForwardId)), ct);
-    if (rows.Count == 0 || !Domain.IsAdmin(user!) && DbValue.Long(rows[0], "user_id") != user!.Id) return Api.Error("forward not found");
+    if (rows.Count == 0) return Api.Error("forward not found");
     var row = rows[0];
     var useExitNode = DbValue.Int(row, "type") is 2 or 3;
     var probeNodeId = DbValue.Long(row, useExitNode ? "out_node_id" : "in_node_id");
@@ -474,7 +474,7 @@ app.MapPost("/api/v1/forward/diagnose", async (DiagnoseRequest request, HttpCont
 });
 app.MapPost("/api/v1/tunnel/diagnose", async (DiagnoseRequest request, HttpContext context, Db db, NodeGateway gateway, CancellationToken ct) =>
 {
-    if (!TryUser(context, app.Services, out var user, out var error)) return error!;
+    if (!RequireAdmin(context, app.Services, out var error)) return error!;
     var rows = await db.QueryAsync("SELECT t.*,n.ip in_ip,n.server_ip in_server_ip,n.version in_version,n.status in_status,o.ip out_ip,o.server_ip out_server_ip,o.version out_version,o.status out_status,o.port_sta out_port_sta,o.port_end out_port_end,o.port_range out_port_range FROM tunnel t LEFT JOIN node n ON n.id=t.in_node_id LEFT JOIN node o ON o.id=t.out_node_id WHERE t.id=@id", Domain.Params(("id", request.TunnelId)), ct);
     if (rows.Count == 0) return Api.Error("tunnel not found");
     var row = rows[0];
@@ -688,6 +688,15 @@ static bool RequireAdmin(HttpContext context, IServiceProvider services, out IRe
 {
     error = null;
     if (!TryUser(context, services, out var user, out error)) return false;
+    if (!Domain.IsAdmin(user!)) { error = Api.Error("forbidden", 403); return false; }
+    return true;
+}
+
+static bool TryAdmin(HttpContext context, IServiceProvider services, out AuthUser? user, out IResult? error)
+{
+    user = null;
+    error = null;
+    if (!TryUser(context, services, out user, out error)) return false;
     if (!Domain.IsAdmin(user!)) { error = Api.Error("forbidden", 403); return false; }
     return true;
 }

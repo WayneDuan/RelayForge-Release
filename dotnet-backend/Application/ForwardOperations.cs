@@ -160,8 +160,9 @@ public static class ForwardOperations
     public static async Task<IResult> ChangeStatusAsync(long id, HttpContext context, Db db, NodeGateway gateway, int status, string command, CancellationToken ct)
     {
         if (!Auth.TryUser(context, out var user, out var error)) return error!;
+        if (!Domain.IsAdmin(user!)) return Api.Error("forbidden", 403);
         var rows = await db.QueryAsync("SELECT f.*,t.flow tunnel_flow,t.flow_limit_gb tunnel_limit_gb,t.in_node_id,t.out_node_id,t.type,t.protocol,ut.id relation_id FROM `forward` f JOIN tunnel t ON t.id=f.tunnel_id LEFT JOIN user_tunnel ut ON ut.user_id=f.user_id AND ut.tunnel_id=f.tunnel_id WHERE f.id=@id", Domain.Params(("id", id)), ct);
-        if (rows.Count == 0 || !Domain.IsAdmin(user!) && DbValue.Long(rows[0], "user_id") != user!.Id) return Api.Error("forward not found");
+        if (rows.Count == 0) return Api.Error("forward not found");
         var row = rows[0];
         var total = FlowOperations.Usage(row, "tunnel_flow");
         var forwardLimit = FlowOperations.ToBytes(DbValue.Long(row, "flow"));

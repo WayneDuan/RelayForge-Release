@@ -115,6 +115,8 @@ const navItems: Array<{ path: View; label: string; icon: typeof LayoutDashboard;
   { path: "settings", label: "面板设置", icon: Settings2, note: "访问与安全" },
 ];
 
+const ADMIN_ONLY_VIEWS = new Set<View>(["nodes", "users", "xui", "settings"]);
+
 const formatBytes = (value: number | undefined | null) => {
   const bytes = Number(value || 0);
   if (bytes < 1024) return `${bytes} B`;
@@ -317,7 +319,7 @@ function LoginPage() {
         <h1>RelayForge</h1>
         <p className="login-copy">私人转发基础设施的统一操作台</p>
         <form onSubmit={submit} className="login-form">
-          <label>管理员账号<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" placeholder="输入账号" /></label>
+          <label>登录账号<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" placeholder="输入账号" /></label>
           <label>访问密码<input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="current-password" placeholder="输入密码" /></label>
           {totpRequired && <label>2FA 验证码<input value={totpCode} onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="输入认证器中的 6 位验证码" /></label>}
           <button className="button button-primary button-wide" disabled={loading}>{loading ? "正在验证..." : "进入控制台"}<ChevronRight size={17} /></button>
@@ -358,15 +360,21 @@ function Workspace() {
   const [activity, setActivity] = useState<Array<{ title: string; detail: string; time: string; tone: string }>>([]);
   const [creator, setCreator] = useState<Creator>(null);
 
-  const activeView = (location.pathname.replace("/", "") || "dashboard") as View;
   const isAdmin = localStorage.getItem("admin") === "true" || localStorage.getItem("role_id") === "0";
+  const requestedView = (location.pathname.replace("/", "") || "dashboard") as View;
+  const activeView = !isAdmin && ADMIN_ONLY_VIEWS.has(requestedView) ? "dashboard" : requestedView;
   const displayName = localStorage.getItem("name") || "admin";
 
   useEffect(() => {
+    if (!isAdmin && ADMIN_ONLY_VIEWS.has(requestedView)) {
+      navigate("/dashboard", { replace: true });
+      return;
+    }
     if (navItems.some((item) => item.path === activeView)) setOpenTabs((current) => current.includes(activeView) ? current : [...current, activeView]);
-  }, [activeView]);
+  }, [activeView, isAdmin, navigate, requestedView]);
 
   const openView = (view: View) => {
+    if (!isAdmin && ADMIN_ONLY_VIEWS.has(view)) return;
     setOpenTabs((current) => current.includes(view) ? current : [...current, view]);
     navigate(`/${view}`);
   };
@@ -380,13 +388,13 @@ function Workspace() {
   const loadData = async (quiet = false) => {
     if (!quiet) setRefreshing(true);
     try {
-      const [nodeResponse, tunnelResponse, forwardResponse, xuiResponse] = await Promise.all([getNodeList(), getTunnelList(), getForwardList(), getXuiInbounds()]);
-      if (nodeResponse.code === 0) setNodes(nodeResponse.data || []);
+      const [tunnelResponse, forwardResponse] = await Promise.all([getTunnelList(), getForwardList()]);
       if (tunnelResponse.code === 0) setTunnels(tunnelResponse.data || []);
       if (forwardResponse.code === 0) setForwards(forwardResponse.data || []);
-      if (xuiResponse.code === 0) setXuiInbounds(xuiResponse.data || []);
       if (isAdmin) {
-        const userResponse = await getAllUsers({ page: 1, size: 100 });
+        const [nodeResponse, xuiResponse, userResponse] = await Promise.all([getNodeList(), getXuiInbounds(), getAllUsers({ page: 1, size: 100 })]);
+        if (nodeResponse.code === 0) setNodes(nodeResponse.data || []);
+        if (xuiResponse.code === 0) setXuiInbounds(xuiResponse.data || []);
         if (userResponse.code === 0) setUsers(Array.isArray(userResponse.data) ? userResponse.data : userResponse.data?.list || []);
       }
       if (!quiet) toast.success("数据已同步");
@@ -401,6 +409,7 @@ function Workspace() {
   useEffect(() => { void loadData(true); }, []);
 
   useEffect(() => {
+    if (!isAdmin) return;
     const token = localStorage.getItem("token");
     if (!token) return;
     let socket: WebSocket | null = null;
@@ -425,13 +434,14 @@ function Workspace() {
       };
     });
     return () => { disposed = true; socket?.close(); };
-  }, []);
+  }, [isAdmin]);
 
   const recordActivity = (title: string, detail: string, tone = "teal") => {
     setActivity((current) => [{ title, detail, tone, time: "刚刚" }, ...current].slice(0, 5));
   };
 
   const toggleForward = async (forward: ApiItem) => {
+    if (!isAdmin) return;
     const enabled = Number(forward.status) === 1;
     const response = enabled ? await pauseForwardService(forward.id) : await resumeForwardService(forward.id);
     if (response.code !== 0) {
@@ -444,6 +454,7 @@ function Workspace() {
   };
 
   const runDiagnostic = async (kind: DiagnosticState["kind"], resource: ApiItem) => {
+    if (!isAdmin) return;
     const runId = `${kind}-${resource.id}-${Date.now()}`;
     if (kind === "tunnel") setSelectedTunnel(null);
     setDiagnostic({ kind, resource, status: "running", runId, response: null });
@@ -461,6 +472,7 @@ function Workspace() {
   };
 
   const removeForward = async (forward: ApiItem) => {
+    if (!isAdmin) return;
     if (!window.confirm(`确定删除转发“${forward.name || forward.id}”吗？`)) return;
     let response = await deleteForward(Number(forward.id));
     if (response.code !== 0 && isAdmin) response = await forceDeleteForward(Number(forward.id));
@@ -475,6 +487,7 @@ function Workspace() {
   const diagnose = (forward: ApiItem) => { void runDiagnostic("forward", forward); };
 
   const refreshNode = async (node?: ApiItem) => {
+    if (!isAdmin) return;
     const response = await checkNodeStatus(node?.id);
     if (response.code === 0) {
       setNodes(response.data || []);
@@ -484,6 +497,7 @@ function Workspace() {
   };
 
   const installNode = async (node: ApiItem, platform: "linux" | "windows" = "linux") => {
+    if (!isAdmin) return;
     const response = await getNodeInstallCommand(Number(node.id), platform);
     if (response.code !== 0 || !response.data) {
       toast.error(response.msg || "获取安装命令失败");
@@ -514,6 +528,7 @@ function Workspace() {
 
   const logout = () => { safeLogout(); navigate("/", { replace: true }); };
   const createResource = async (kind: Exclude<Creator, null>, values: Record<string, string>) => {
+    if (!isAdmin) return false;
     const numericKeys = ["inNodeId", "outNodeId", "tunnelId", "xuiInboundId", "inPort", "outPort", "type", "flowType", "flowLimitGb", "flow", "trafficRatio", "speedLimitKbps"];
     const payload = Object.fromEntries(Object.entries(values).flatMap(([key, value]) => {
       if (key === "autoAssignPort" || (key === "inPort" || key === "outPort") && !value.trim()) return [];
@@ -531,6 +546,7 @@ function Workspace() {
     return true;
   };
   const saveNode = async (values: Record<string, string>) => {
+    if (!isAdmin) return false;
     if (!selectedNode) return false;
     const response = await updateNode({
       id: Number(selectedNode.id),
@@ -555,6 +571,7 @@ function Workspace() {
     return true;
   };
   const importForwards = async (tunnelId: number, rows: ImportForwardRow[]) => {
+    if (!isAdmin) return [];
     const outcomes: ImportForwardOutcome[] = [];
     for (const row of rows) {
       const response = await createForward({ name: row.name, tunnelId, remoteAddr: row.target, inPort: row.inPort, outPort: row.outPort, strategy: "fifo" });
@@ -566,6 +583,7 @@ function Workspace() {
     return outcomes;
   };
   const saveTunnel = async (values: Record<string, string>) => {
+    if (!isAdmin) return false;
     if (!selectedTunnel) return false;
     const response = await updateTunnel({
       id: Number(selectedTunnel.id), name: values.name.trim(), flowType: Number(values.flowType || 2), flowLimitGb: Number(values.flowLimitGb || 0),
@@ -581,6 +599,7 @@ function Workspace() {
     return true;
   };
   const saveForward = async (values: Record<string, string>) => {
+    if (!isAdmin) return false;
     if (!selectedForward) return false;
     const response = await updateForward({
       id: Number(selectedForward.id), name: values.name.trim(), remoteAddr: values.remoteAddr.trim(),
@@ -597,6 +616,7 @@ function Workspace() {
   };
   const inspectTunnel = (tunnel: ApiItem) => { void runDiagnostic("tunnel", tunnel); };
   const removeTunnel = async (tunnel: ApiItem) => {
+    if (!isAdmin) return;
     const count = forwards.filter((forward) => Number(forward.tunnelId) === Number(tunnel.id)).length;
     if (count > 0) { toast.error(`该隧道还有 ${count} 条转发，请先删除或迁移转发`); return; }
     if (!window.confirm(`确定删除隧道“${tunnel.name || tunnel.id}”吗？`)) return;
@@ -615,12 +635,12 @@ function Workspace() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="sidebar-brand"><div className="brand-mark">RF</div><div><small>RELAYFORGE</small><strong>Admin Console</strong></div></div>
+        <div className="sidebar-brand"><div className="brand-mark">RF</div><div><small>RELAYFORGE</small><strong>Control Console</strong></div></div>
         <button className="workspace-switcher" type="button"><span className="workspace-glyph"><LayoutDashboard size={14} /></span><strong>Workspace</strong><span className="workspace-count">{forwards.length}</span></button>
         <label className="module-search"><Search size={15} /><input value={moduleQuery} onChange={(event) => setModuleQuery(event.target.value)} placeholder="搜索模块" /></label>
         <div className="sidebar-section-label">运行总览</div>
         <nav className="main-nav">
-          {navItems.filter((item) => (isAdmin || item.path !== "users") && `${item.label} ${item.note}`.toLowerCase().includes(moduleQuery.toLowerCase())).map(({ path, label, icon: Icon, note }) => <button key={path} className={activeView === path ? "nav-item active" : "nav-item"} onClick={() => openView(path)}><span className="nav-icon"><Icon size={16} /></span><span><strong>{label}</strong><small>{note}</small></span>{activeView === path && <ChevronRight size={15} />}</button>)}
+          {navItems.filter((item) => (isAdmin || !ADMIN_ONLY_VIEWS.has(item.path)) && `${item.label} ${item.note}`.toLowerCase().includes(moduleQuery.toLowerCase())).map(({ path, label, icon: Icon, note }) => <button key={path} className={activeView === path ? "nav-item active" : "nav-item"} onClick={() => openView(path)}><span className="nav-icon"><Icon size={16} /></span><span><strong>{label}</strong><small>{note}</small></span>{activeView === path && <ChevronRight size={15} />}</button>)}
         </nav>
         <div className="sidebar-section-label sidebar-section-secondary">系统</div>
         <div className="sidebar-bottom">
@@ -630,27 +650,26 @@ function Workspace() {
       </aside>
 
       <main className="main-area">
-        <header className="topbar"><div><span className="breadcrumb">RELAYFORGE / {activeView.toUpperCase()}</span><h1>{navItems.find((item) => item.path === activeView)?.label || "总览"}</h1></div><div className="topbar-actions"><div className="system-state"><i />系统正常 <span>·</span> {onlineNodes}/{nodes.length || 0} 节点在线</div><button className="icon-button" title="刷新所有数据" onClick={() => void loadData()} disabled={refreshing}><RefreshCw size={17} className={refreshing ? "spin" : ""} /></button><button className="button button-primary" onClick={() => setCreator("forwards")}><Plus size={16} /> 新建转发</button></div></header>
+        <header className="topbar"><div><span className="breadcrumb">RELAYFORGE / {activeView.toUpperCase()}</span><h1>{navItems.find((item) => item.path === activeView)?.label || "总览"}</h1></div><div className="topbar-actions"><div className="system-state"><i />系统正常 <span>·</span> {isAdmin ? `${onlineNodes}/${nodes.length || 0} 节点在线` : "只读用户视图"}</div><button className="icon-button" title="刷新所有数据" onClick={() => void loadData()} disabled={refreshing}><RefreshCw size={17} className={refreshing ? "spin" : ""} /></button>{isAdmin && <button className="button button-primary" onClick={() => setCreator("forwards")}><Plus size={16} /> 新建转发</button>}</div></header>
 
         <div className="workspace-tabs" role="tablist" aria-label="已打开模块">{openTabs.map((tab) => { const item = navItems.find((navItem) => navItem.path === tab)!; const Icon = item.icon; return <button key={tab} type="button" role="tab" aria-selected={tab === activeView} className={tab === activeView ? "workspace-tab active" : "workspace-tab"} onClick={() => openView(tab)}><Icon size={15} /><strong>{item.label}</strong><span className="tab-close" role="button" aria-label={`关闭${item.label}`} onClick={(event) => { event.stopPropagation(); closeTab(tab); }}><X size={13} /></span></button>; })}</div>
         <div className="content-area">
           <ConsoleOverview view={activeView} tabs={openTabs.length} nodes={nodes.length} forwards={forwards.length} tunnels={tunnels.length} activeForwards={activeForwards} isAdmin={isAdmin} />
-          {activeView === "dashboard" && <DashboardView nodes={nodes} tunnels={tunnels} forwards={forwards} users={users} onlineNodes={onlineNodes} activeForwards={activeForwards} totalUp={totalUp} totalDown={totalDown} activity={activity} onNavigate={openView} onCreate={setCreator} onToggle={toggleForward} onDiagnose={diagnose} onEdit={setSelectedForward} />}
-          {activeView === "forwards" && <ForwardsView forwards={filteredForwards} query={query} setQuery={setQuery} onCreate={() => setCreator("forwards")} onImport={() => setImportingForwards(true)} onToggle={toggleForward} onDiagnose={diagnose} onDelete={removeForward} onEdit={setSelectedForward} onRefresh={() => void loadData()} />}
-          {activeView === "nodes" && <NodesView nodes={nodes} tunnels={tunnels} forwards={forwards} nodeStats={nodeStats} onCreate={() => setCreator("nodes")} onEdit={setSelectedNode} onRefresh={refreshNode} onInstall={installNode} onReload={() => void loadData()} />}
-          {activeView === "tunnels" && <TunnelsView tunnels={tunnels} forwards={forwards} nodes={nodes} onCreate={() => setCreator("tunnels")} onManage={setSelectedTunnel} onDiagnose={inspectTunnel} onDelete={removeTunnel} />}
+          {activeView === "dashboard" && <DashboardView isAdmin={isAdmin} nodes={nodes} tunnels={tunnels} forwards={forwards} users={users} onlineNodes={onlineNodes} activeForwards={activeForwards} totalUp={totalUp} totalDown={totalDown} activity={activity} onNavigate={openView} onCreate={isAdmin ? setCreator : undefined} onToggle={toggleForward} onDiagnose={diagnose} onEdit={isAdmin ? setSelectedForward : undefined} />}
+          {activeView === "forwards" && <ForwardsView readOnly={!isAdmin} forwards={filteredForwards} query={query} setQuery={setQuery} onCreate={isAdmin ? () => setCreator("forwards") : undefined} onImport={isAdmin ? () => setImportingForwards(true) : undefined} onToggle={toggleForward} onDiagnose={diagnose} onDelete={isAdmin ? removeForward : undefined} onEdit={isAdmin ? setSelectedForward : undefined} onRefresh={() => void loadData()} />}
+          {activeView === "nodes" && isAdmin && <NodesView nodes={nodes} tunnels={tunnels} forwards={forwards} nodeStats={nodeStats} onCreate={() => setCreator("nodes")} onEdit={setSelectedNode} onRefresh={refreshNode} onInstall={installNode} onReload={() => void loadData()} />}
+          {activeView === "tunnels" && <TunnelsView readOnly={!isAdmin} tunnels={tunnels} forwards={forwards} nodes={nodes} onCreate={() => setCreator("tunnels")} onManage={setSelectedTunnel} onDiagnose={inspectTunnel} onDelete={removeTunnel} />}
           {activeView === "users" && isAdmin && <UsersView users={users} onChanged={() => void loadData(true)} />}
-          {activeView === "users" && !isAdmin && <div className="panel empty-large"><ShieldCheck size={24} /><h3>没有访问权限</h3><p>用户管理仅对管理员开放。</p></div>}
-          {activeView === "xui" && <XuiView onChanged={() => void loadData(true)} />}
-          {activeView === "settings" && <SettingsView />}
+          {activeView === "xui" && isAdmin && <XuiView onChanged={() => void loadData(true)} />}
+          {activeView === "settings" && isAdmin && <SettingsView />}
         </div>
       </main>
-      {diagnostic && <DiagnosticDrawer diagnostic={diagnostic} onClose={() => setDiagnostic(null)} />}
-      {importingForwards && <ImportForwardModal tunnels={tunnels} onClose={() => setImportingForwards(false)} onSubmit={importForwards} />}
-      {creator && <CreateModal kind={creator} nodes={nodes} tunnels={tunnels} xuiInbounds={xuiInbounds} onClose={() => setCreator(null)} onSubmit={createResource} />}
-      {selectedNode && <NodeEditModal node={selectedNode} onClose={() => setSelectedNode(null)} onSubmit={saveNode} />}
-      {selectedForward && <ForwardEditModal forward={selectedForward} onClose={() => setSelectedForward(null)} onSubmit={saveForward} onDiagnose={() => void diagnose(selectedForward)} />}
-      {selectedTunnel && <TunnelEditModal tunnel={selectedTunnel} onClose={() => setSelectedTunnel(null)} onSubmit={saveTunnel} onDiagnose={() => void inspectTunnel(selectedTunnel)} onDelete={() => void removeTunnel(selectedTunnel)} />}
+      {isAdmin && diagnostic && <DiagnosticDrawer diagnostic={diagnostic} onClose={() => setDiagnostic(null)} />}
+      {isAdmin && importingForwards && <ImportForwardModal tunnels={tunnels} onClose={() => setImportingForwards(false)} onSubmit={importForwards} />}
+      {isAdmin && creator && <CreateModal kind={creator} nodes={nodes} tunnels={tunnels} xuiInbounds={xuiInbounds} onClose={() => setCreator(null)} onSubmit={createResource} />}
+      {isAdmin && selectedNode && <NodeEditModal node={selectedNode} onClose={() => setSelectedNode(null)} onSubmit={saveNode} />}
+      {isAdmin && selectedForward && <ForwardEditModal forward={selectedForward} onClose={() => setSelectedForward(null)} onSubmit={saveForward} onDiagnose={() => void diagnose(selectedForward)} />}
+      {isAdmin && selectedTunnel && <TunnelEditModal tunnel={selectedTunnel} onClose={() => setSelectedTunnel(null)} onSubmit={saveTunnel} onDiagnose={() => void inspectTunnel(selectedTunnel)} onDelete={() => void removeTunnel(selectedTunnel)} />}
     </div>
   );
 }
@@ -670,31 +689,31 @@ function ConsoleOverview({ view, tabs, nodes, forwards, tunnels, activeForwards,
   return <section className="console-overview"><div className="console-overview-head"><div><span className="overview-chip">OVERVIEW</span><h2>{current.title}</h2><p>{current.description}</p></div><div className="focus-chip"><span>当前焦点</span><strong>{current.focus}</strong></div></div><div className="overview-stats"><div><span>模块</span><strong>{moduleCount}</strong><small>当前控制台可用资源</small></div><div><span>打开标签</span><strong>{tabs}</strong><small>保留在本次工作区</small></div><div><span>已选视图</span><strong>{tabs}/{tabs}</strong><small>{current.title}</small></div><div><span>实时上下文</span><strong>{activeForwards} 条运行</strong><small>{forwards} 转发 · {nodes} 节点 · {tunnels} 隧道</small></div></div></section>;
 }
 
-function DashboardView({ nodes, tunnels, forwards, users, onlineNodes, activeForwards, totalUp, totalDown, activity, onNavigate, onCreate, onToggle, onDiagnose, onEdit }: any) {
+function DashboardView({ isAdmin, nodes, tunnels, forwards, users, onlineNodes, activeForwards, totalUp, totalDown, activity, onNavigate, onCreate, onToggle, onDiagnose, onEdit }: any) {
   const totalTraffic = totalUp + totalDown;
   const rankedForwards = [...forwards].sort((a, b) => trafficUsage(b) - trafficUsage(a)).slice(0, 4);
   const rankedNodes = nodes.map((node: ApiItem) => ({ node, summary: nodeTrafficSummary(Number(node.id), tunnels, forwards) })).sort((a: any, b: any) => b.summary.total - a.summary.total).slice(0, 4);
   return <>
-    <section className="dashboard-hero"><div className="hero-copy"><div className="hero-kicker"><span className="live-pulse" /> NETWORK / LIVE</div><h2>你的网络，<em>清晰可见。</em></h2><p>实时掌握节点、隧道与转发服务的状态。需要新增线路时，从这里开始。</p><div className="hero-actions"><button className="button button-primary" onClick={() => onCreate("forwards")}><Plus size={16} /> 新建转发</button><button className="button button-ghost" onClick={() => onNavigate("nodes")}><Router size={15} /> 管理节点</button></div></div><div className="hero-status"><div className="hero-status-top"><span>NETWORK HEALTH</span><strong>{nodes.length ? `${Math.round(onlineNodes / nodes.length * 100)}%` : "--"}</strong></div><div className="health-ring"><div><strong>{onlineNodes}</strong><span>在线节点</span></div></div><div className="hero-status-foot"><span><i className="status-dot is-online" /> {onlineNodes} 个节点在线</span><span>{activeForwards} 条线路运行中</span></div></div></section>
+    <section className="dashboard-hero"><div className="hero-copy"><div className="hero-kicker"><span className="live-pulse" /> NETWORK / LIVE</div><h2>你的网络，<em>清晰可见。</em></h2><p>{isAdmin ? "实时掌握节点、隧道与转发服务的状态。需要新增线路时，从这里开始。" : "查看管理员分配给你的隧道和转发资源。"}</p><div className="hero-actions">{isAdmin && <><button className="button button-primary" onClick={() => onCreate("forwards")}><Plus size={16} /> 新建转发</button><button className="button button-ghost" onClick={() => onNavigate("nodes")}><Router size={15} /> 管理节点</button></>}</div></div><div className="hero-status"><div className="hero-status-top"><span>NETWORK HEALTH</span><strong>{nodes.length ? `${Math.round(onlineNodes / nodes.length * 100)}%` : "--"}</strong></div><div className="health-ring"><div><strong>{onlineNodes}</strong><span>在线节点</span></div></div><div className="hero-status-foot"><span><i className="status-dot is-online" /> {isAdmin ? `${onlineNodes} 个节点在线` : "资源只读"}</span><span>{activeForwards} 条线路运行中</span></div></div></section>
     <section className="dashboard-signal"><div className="signal-main"><div className="section-label"><span>ACTIVE ROUTES</span><button className="text-button" onClick={() => onNavigate("tunnels")}>查看拓扑 <ChevronRight size={14} /></button></div><div className="route-stage"><div className="route-node"><span className="route-icon"><Router size={18} /></span><div><strong>{nodes[0]?.name || "你的入口节点"}</strong><small>{nodes[0]?.serverIp || "等待节点接入"}</small></div><i className="route-state" /></div><div className="route-connector"><span /><span /><span /><span /><span /></div><div className="route-node route-destination"><span className="route-icon"><Network size={18} /></span><div><strong>{forwards[0]?.name || "转发服务"}</strong><small>{forwards[0]?.remoteAddr || "创建第一条线路"}</small></div><i className="route-state" /></div></div><div className="signal-stats"><div><span>运行中转发</span><strong>{activeForwards}<small> / {forwards.length || 0}</small></strong></div><div><span>累计流量</span><strong>{formatBytes(totalUp + totalDown)}</strong></div><div><span>实时连接</span><strong>{nodes.length ? "稳定" : "--"}</strong></div></div></div><div className="signal-aside"><div className="section-label"><span>ACTIVITY</span><button className="text-button" onClick={() => undefined}>全部记录 <ChevronRight size={14} /></button></div><div className="activity-list">{activity.length === 0 ? <div className="activity-empty"><Activity size={18} /><span>你的操作记录会出现在这里</span></div> : activity.slice(0, 3).map((item: any, index: number) => <div className="activity-item" key={`${item.title}-${index}`}><span className={`activity-icon ${item.tone}`}><Check size={13} /></span><div><strong>{item.title}</strong><small>{item.detail}</small></div><time>{item.time}</time></div>)}</div></div></section>
     <section className="traffic-report-grid"><div className="panel traffic-report"><div className="report-heading"><div><span>TRAFFIC REPORT</span><h3>累计流量报表</h3></div><button className="text-button" onClick={() => onNavigate("forwards")}>查看全部转发 <ChevronRight size={14} /></button></div><div className="report-total"><strong>{formatBytes(totalTraffic)}</strong><span>当前已计入的累计上下行流量</span></div><div className="traffic-split"><div><div><span><ArrowUpFromLine size={13} /> 上行</span><strong>{formatBytes(totalUp)}</strong></div><i><b style={{ width: `${totalTraffic ? Math.max(2, totalUp / totalTraffic * 100) : 0}%` }} /></i><small>{totalTraffic ? `${(totalUp / totalTraffic * 100).toFixed(1)}%` : "0%"}</small></div><div><div><span><ArrowDownToLine size={13} /> 下行</span><strong>{formatBytes(totalDown)}</strong></div><i><b className="down" style={{ width: `${totalTraffic ? Math.max(2, totalDown / totalTraffic * 100) : 0}%` }} /></i><small>{totalTraffic ? `${(totalDown / totalTraffic * 100).toFixed(1)}%` : "0%"}</small></div></div><div className="report-foot"><span>统计口径：按转发累计值</span><span>{forwards.length} 条服务 · {tunnels.length} 条链路</span></div></div><div className="panel traffic-ranking"><PanelHeading title="节点流量排名" action="节点详情" onClick={() => onNavigate("nodes")} /><div className="ranking-list">{rankedNodes.length ? rankedNodes.map(({ node, summary }: any, index: number) => <div className="ranking-row" key={node.id}><span className="ranking-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{node.name || `Node-${node.id}`}</strong><small>{summary.forwardCount} 条转发承载</small><i><b style={{ width: `${rankedNodes[0]?.summary.total ? Math.max(3, summary.total / rankedNodes[0].summary.total * 100) : 0}%` }} /></i></div><strong>{formatBytes(summary.total)}</strong></div>) : <EmptyState text="暂无节点流量数据" />}</div></div><div className="panel traffic-ranking"><PanelHeading title="转发流量排名" action="服务列表" onClick={() => onNavigate("forwards")} /><div className="ranking-list">{rankedForwards.length ? rankedForwards.map((forward: ApiItem, index: number) => <div className="ranking-row" key={forward.id}><span className="ranking-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{forward.name || "未命名服务"}</strong><small>{forward.tunnelName || "未关联隧道"}</small><i><b className="pink" style={{ width: `${trafficUsage(rankedForwards[0]) ? Math.max(3, trafficUsage(forward) / trafficUsage(rankedForwards[0]) * 100) : 0}%` }} /></i></div><strong>{formatBytes(trafficUsage(forward))}</strong></div>) : <EmptyState text="暂无转发流量数据" />}</div></div></section>
-    <section className="dashboard-grid lower-grid"><div className="panel wide-panel"><PanelHeading title="转发服务" action="管理服务" onClick={() => onNavigate("forwards")} /><div className="table-wrap"><table><thead><tr><th>状态</th><th>服务</th><th>入口</th><th>目标</th><th>流量</th><th>操作</th></tr></thead><tbody>{forwards.length === 0 ? <tr><td colSpan={6}><EmptyState text="还没有转发服务" action="创建第一条线路" onAction={() => onCreate("forwards")} /></td></tr> : forwards.slice(0, 5).map((forward: ApiItem) => <ForwardRow key={forward.id} forward={forward} onToggle={onToggle} onDiagnose={onDiagnose} onEdit={onEdit} />)}</tbody></table></div></div><div className="panel quick-panel"><PanelHeading title="从这里开始" /><button className="quick-action" onClick={() => onCreate("nodes")}><span className="quick-icon teal"><Terminal size={17} /></span><span><strong>接入一个节点</strong><small>获取 Agent 安装命令</small></span><ChevronRight size={16} /></button><button className="quick-action" onClick={() => onCreate("tunnels")}><span className="quick-icon blue"><SlidersHorizontal size={17} /></span><span><strong>组织一条隧道</strong><small>{tunnels.length} 条隧道可用</small></span><ChevronRight size={16} /></button><div className="capacity"><div><span>上行</span><strong>{formatBytes(totalUp)}</strong></div><div className="capacity-bar"><i style={{ width: `${totalUp ? 68 : 4}%` }} /></div><small>{users.length ? `${users.length} 个用户正在使用资源` : "私有部署 · 管理员视图"}</small></div></div></section>
+    <section className="dashboard-grid lower-grid"><div className="panel wide-panel"><PanelHeading title="转发服务" action={isAdmin ? "管理服务" : "查看服务"} onClick={() => onNavigate("forwards")} /><div className="table-wrap"><table><thead><tr><th>状态</th><th>服务</th><th>入口</th><th>目标</th><th>流量</th><th>操作</th></tr></thead><tbody>{forwards.length === 0 ? <tr><td colSpan={6}><EmptyState text="还没有转发服务" action={isAdmin ? "创建第一条线路" : undefined} onAction={isAdmin ? () => onCreate("forwards") : undefined} /></td></tr> : forwards.slice(0, 5).map((forward: ApiItem) => <ForwardRow key={forward.id} readOnly={!isAdmin} forward={forward} onToggle={onToggle} onDiagnose={onDiagnose} onEdit={onEdit} />)}</tbody></table></div></div><div className="panel quick-panel"><PanelHeading title={isAdmin ? "从这里开始" : "资源概览"} />{isAdmin && <><button className="quick-action" onClick={() => onCreate("nodes")}><span className="quick-icon teal"><Terminal size={17} /></span><span><strong>接入一个节点</strong><small>获取 Agent 安装命令</small></span><ChevronRight size={16} /></button><button className="quick-action" onClick={() => onCreate("tunnels")}><span className="quick-icon blue"><SlidersHorizontal size={17} /></span><span><strong>组织一条隧道</strong><small>{tunnels.length} 条隧道可用</small></span><ChevronRight size={16} /></button></>}<div className="capacity"><div><span>上行</span><strong>{formatBytes(totalUp)}</strong></div><div className="capacity-bar"><i style={{ width: `${totalUp ? 68 : 4}%` }} /></div><small>{isAdmin ? (users.length ? `${users.length} 个用户正在使用资源` : "私有部署 · 管理员视图") : "普通用户只能查看已授权资源"}</small></div></div></section>
   </>;
 }
 
 function PanelHeading({ title, action, onClick }: { title: string; action?: string; onClick?: () => void }) { return <div className="panel-heading"><h3>{title}</h3>{action && <button className="text-button" onClick={onClick}>{action}<ChevronRight size={14} /></button>}</div>; }
 function EmptyState({ text, action, onAction }: { text: string; action?: string; onAction?: () => void }) { return <div className="empty-state"><CircleHelp size={18} /><span>{text}</span>{action && <button className="text-button" onClick={onAction}>{action}<ChevronRight size={14} /></button>}</div>; }
-function ForwardRow({ forward, onToggle, onDiagnose, onDelete, onEdit }: { forward: ApiItem; onToggle: (item: ApiItem) => void; onDiagnose: (item: ApiItem) => void; onDelete?: (item: ApiItem) => void; onEdit?: (item: ApiItem) => void }) {
+function ForwardRow({ forward, readOnly = false, onToggle, onDiagnose, onDelete, onEdit }: { forward: ApiItem; readOnly?: boolean; onToggle: (item: ApiItem) => void; onDiagnose: (item: ApiItem) => void; onDelete?: (item: ApiItem) => void; onEdit?: (item: ApiItem) => void }) {
   const running = Number(forward.status) === 1;
   const exhausted = Number(forward.status) === 2;
   const entryIp = forward.entryIp || forward.inIp || "0.0.0.0";
   const publicPort = forward.inPort;
   const used = trafficUsage(forward);
   const limit = Number(forward.flow || 0);
-  return <tr><td><span className="table-status"><StatusDot status={running} />{running ? "运行中" : exhausted ? "已超额" : "已暂停"}</span></td><td><strong className="table-primary">{forward.name || "未命名服务"}</strong>{forward.xuiInboundName && <small className="table-secondary">3x-ui · {forward.xuiInboundName}</small>}<small className="table-secondary">{forward.tunnelName || "未关联隧道"}</small></td><td className="mono">{entryIp}:{publicPort || "-"}<small className="table-secondary">{Number(forward.tunnelType) === 3 ? "反向隧道公网入口" : "入口"}</small></td><td className="mono target-cell">{forward.remoteAddr || "-"}</td><td><span className="flow-pair"><ArrowUpFromLine size={12} />{formatBytes(Number(forward.inFlow))}<ArrowDownToLine size={12} />{formatBytes(Number(forward.outFlow))}</span><small className="table-secondary">{limit > 0 ? `${formatBytes(used)} / ${limit} GB` : "不限额"}</small></td><td><div className="row-actions"><button className="mini-button" title="编辑转发和流量上限" onClick={() => onEdit?.(forward)}><Settings2 size={14} /></button><button className="mini-button" title="诊断链路" onClick={() => onDiagnose(forward)}><Activity size={14} /></button><button className={`mini-button ${running ? "warning" : "success"}`} title={running ? "暂停服务" : exhausted ? "提高额度后恢复" : "恢复服务"} onClick={() => void onToggle(forward)}>{running ? <Pause size={14} /> : <Play size={14} />}</button>{onDelete && <button className="mini-button danger" title="删除转发" onClick={() => onDelete(forward)}><X size={14} /></button>}</div></td></tr>;
+  return <tr><td><span className="table-status"><StatusDot status={running} />{running ? "运行中" : exhausted ? "已超额" : "已暂停"}</span></td><td><strong className="table-primary">{forward.name || "未命名服务"}</strong>{forward.xuiInboundName && <small className="table-secondary">3x-ui · {forward.xuiInboundName}</small>}<small className="table-secondary">{forward.tunnelName || "未关联隧道"}</small></td><td className="mono">{entryIp}:{publicPort || "-"}<small className="table-secondary">{Number(forward.tunnelType) === 3 ? "反向隧道公网入口" : "入口"}</small></td><td className="mono target-cell">{forward.remoteAddr || "-"}</td><td><span className="flow-pair"><ArrowUpFromLine size={12} />{formatBytes(Number(forward.inFlow))}<ArrowDownToLine size={12} />{formatBytes(Number(forward.outFlow))}</span><small className="table-secondary">{limit > 0 ? `${formatBytes(used)} / ${limit} GB` : "不限额"}</small></td><td>{readOnly ? <small className="table-secondary">只读</small> : <div className="row-actions"><button className="mini-button" title="编辑转发和流量上限" onClick={() => onEdit?.(forward)}><Settings2 size={14} /></button><button className="mini-button" title="诊断链路" onClick={() => onDiagnose(forward)}><Activity size={14} /></button><button className={`mini-button ${running ? "warning" : "success"}`} title={running ? "暂停服务" : exhausted ? "提高额度后恢复" : "恢复服务"} onClick={() => void onToggle(forward)}>{running ? <Pause size={14} /> : <Play size={14} />}</button>{onDelete && <button className="mini-button danger" title="删除转发" onClick={() => onDelete(forward)}><X size={14} /></button>}</div>}</td></tr>;
 }
 
-function ForwardsView({ forwards, query, setQuery, onCreate, onImport, onToggle, onDiagnose, onDelete, onEdit, onRefresh }: any) {
+function ForwardsView({ readOnly = false, forwards, query, setQuery, onCreate, onImport, onToggle, onDiagnose, onDelete, onEdit, onRefresh }: any) {
   const [groupBy, setGroupBy] = useState<"tunnel" | "entry">("tunnel");
   const [sortBy, setSortBy] = useState<"traffic" | "name">("traffic");
   const totalUp = forwards.reduce((sum: number, forward: ApiItem) => sum + Number(forward.inFlow || 0), 0);
@@ -717,9 +736,9 @@ function ForwardsView({ forwards, query, setQuery, onCreate, onImport, onToggle,
   }, [forwards, groupBy, sortBy]);
 
   return <>
-    <section className="page-intro"><div><p className="eyebrow">SERVICE REGISTRY / 02</p><h2>转发服务</h2><p className="muted">按链路或入口分组查看每条转发的累计上下行流量。</p></div><div className="intro-actions"><button className="button button-quiet" onClick={onImport}><ArrowUpFromLine size={15} /> 导入转发</button><button className="button button-primary" onClick={onCreate}><Plus size={16} /> 新建转发</button></div></section>
+    <section className="page-intro"><div><p className="eyebrow">SERVICE REGISTRY / 02</p><h2>转发服务</h2><p className="muted">按链路或入口分组查看每条转发的累计上下行流量。</p></div>{!readOnly && <div className="intro-actions"><button className="button button-quiet" onClick={onImport}><ArrowUpFromLine size={15} /> 导入转发</button><button className="button button-primary" onClick={onCreate}><Plus size={16} /> 新建转发</button></div>}</section>
     <section className="traffic-overview" aria-label="转发流量汇总"><div><span>累计流量</span><strong>{formatBytes(totalUp + totalDown)}</strong><small>{forwards.length} 条转发</small></div><div><span><ArrowUpFromLine size={13} /> 上行</span><strong>{formatBytes(totalUp)}</strong><small>入口接收</small></div><div><span><ArrowDownToLine size={13} /> 下行</span><strong>{formatBytes(totalDown)}</strong><small>目标发送</small></div><div><span>运行中</span><strong>{activeCount}<small> / {forwards.length}</small></strong><small>服务状态</small></div></section>
-    <section className="panel table-panel"><div className="table-toolbar traffic-toolbar"><div className="search-box"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索服务、隧道或目标地址" /></div><div className="traffic-controls"><div className="segmented-control" aria-label="流量分组方式"><button className={groupBy === "tunnel" ? "active" : ""} onClick={() => setGroupBy("tunnel")}>按隧道</button><button className={groupBy === "entry" ? "active" : ""} onClick={() => setGroupBy("entry")}>按入口</button></div><div className="segmented-control" aria-label="组内排序方式"><button className={sortBy === "traffic" ? "active" : ""} onClick={() => setSortBy("traffic")}>流量优先</button><button className={sortBy === "name" ? "active" : ""} onClick={() => setSortBy("name")}>名称排序</button></div><button className="button button-quiet" onClick={onRefresh}><RefreshCw size={15} /> 刷新列表</button></div></div><div className="table-wrap"><table><thead><tr><th>状态</th><th>服务</th><th>入口</th><th>目标地址</th><th>累计流量</th><th>维护</th></tr></thead><tbody>{groups.length ? groups.map((group) => { const groupUp = group.forwards.reduce((sum, forward) => sum + Number(forward.inFlow || 0), 0); const groupDown = group.forwards.reduce((sum, forward) => sum + (Number(forward.tunnelFlow || 2) === 1 ? 0 : Number(forward.outFlow || 0)), 0); return <Fragment key={`${groupBy}-${group.title}`}><tr className="traffic-group-row"><td colSpan={6}><div className="traffic-group-head"><div><strong>{group.title}</strong><span>{group.detail} · {group.forwards.length} 条转发</span></div><div className="traffic-group-total"><span><ArrowUpFromLine size={11} /> {formatBytes(groupUp)}</span><span><ArrowDownToLine size={11} /> {formatBytes(groupDown)}</span><strong>{formatBytes(groupUp + groupDown)}</strong></div></div></td></tr>{group.forwards.map((forward) => <ForwardRow key={forward.id} forward={forward} onToggle={onToggle} onDiagnose={onDiagnose} onDelete={onDelete} onEdit={onEdit} />)}</Fragment>; }) : <tr><td colSpan={6}><EmptyState text="没有匹配的转发服务" /></td></tr>}</tbody></table></div></section>
+    <section className="panel table-panel"><div className="table-toolbar traffic-toolbar"><div className="search-box"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索服务、隧道或目标地址" /></div><div className="traffic-controls"><div className="segmented-control" aria-label="流量分组方式"><button className={groupBy === "tunnel" ? "active" : ""} onClick={() => setGroupBy("tunnel")}>按隧道</button><button className={groupBy === "entry" ? "active" : ""} onClick={() => setGroupBy("entry")}>按入口</button></div><div className="segmented-control" aria-label="组内排序方式"><button className={sortBy === "traffic" ? "active" : ""} onClick={() => setSortBy("traffic")}>流量优先</button><button className={sortBy === "name" ? "active" : ""} onClick={() => setSortBy("name")}>名称排序</button></div><button className="button button-quiet" onClick={onRefresh}><RefreshCw size={15} /> 刷新列表</button></div></div><div className="table-wrap"><table><thead><tr><th>状态</th><th>服务</th><th>入口</th><th>目标地址</th><th>累计流量</th><th>{readOnly ? "权限" : "维护"}</th></tr></thead><tbody>{groups.length ? groups.map((group) => { const groupUp = group.forwards.reduce((sum, forward) => sum + Number(forward.inFlow || 0), 0); const groupDown = group.forwards.reduce((sum, forward) => sum + (Number(forward.tunnelFlow || 2) === 1 ? 0 : Number(forward.outFlow || 0)), 0); return <Fragment key={`${groupBy}-${group.title}`}><tr className="traffic-group-row"><td colSpan={6}><div className="traffic-group-head"><div><strong>{group.title}</strong><span>{group.detail} · {group.forwards.length} 条转发</span></div><div className="traffic-group-total"><span><ArrowUpFromLine size={11} /> {formatBytes(groupUp)}</span><span><ArrowDownToLine size={11} /> {formatBytes(groupDown)}</span><strong>{formatBytes(groupUp + groupDown)}</strong></div></div></td></tr>{group.forwards.map((forward) => <ForwardRow key={forward.id} readOnly={readOnly} forward={forward} onToggle={onToggle} onDiagnose={onDiagnose} onDelete={onDelete} onEdit={onEdit} />)}</Fragment>; }) : <tr><td colSpan={6}><EmptyState text="没有匹配的转发服务" /></td></tr>}</tbody></table></div></section>
   </>;
 }
 
@@ -785,7 +804,7 @@ function NodesView({ nodes, tunnels, forwards, nodeStats, onCreate, onEdit, onRe
   return <><section className="page-intro"><div><p className="eyebrow">AGENT FLEET / 03</p><h2>节点管理</h2><p className="muted">每个节点展示当前承载的转发累计流量，入口与出口分别统计。</p></div><div className="intro-actions"><button className="button button-quiet" onClick={onReload}><RefreshCw size={15} /> 同步状态</button><button className="button button-primary" onClick={onCreate}><Terminal size={15} /> 接入节点</button></div></section><section className="node-grid">{nodes.length ? summaries.map(({ node, summary }: any) => <div className="panel node-card" key={node.id}><div className="node-card-top"><span className="node-symbol large"><HardDrive size={20} /></span><div><h3>{node.name || `Node-${node.id}`}</h3><p>{node.serverIp || node.ip || "未配置地址"}</p>{reverseNodeRoles(Number(node.id), tunnels).length > 0 && <small className="table-secondary">{reverseNodeRoles(Number(node.id), tunnels).join(" · ")}</small>}</div><span className={`node-status ${Number(node.status) === 1 ? "online" : "offline"}`}><StatusDot status={Number(node.status) === 1} />{Number(node.status) === 1 ? "在线" : "离线"}</span></div><div className="node-card-meta"><div><span>VERSION</span><strong>{node.version || "--"}</strong></div><div><span>PORT POOL</span><strong>{node.portRange || "手动指定"}</strong></div><div><span>LAST UPDATE</span><strong>{formatDate(node.updatedTime)}</strong></div></div><div className="node-traffic"><div className="node-traffic-head"><span>节点累计流量</span><strong>{formatBytes(summary.total)}</strong></div><div className="node-traffic-values"><span><ArrowUpFromLine size={12} /> 入口承载 <strong>{formatBytes(summary.ingress)}</strong></span><span><ArrowDownToLine size={12} /> 出口承载 <strong>{formatBytes(summary.egress)}</strong></span></div><div className="node-traffic-bar"><i style={{ width: `${highestTraffic ? Math.max(3, summary.total / highestTraffic * 100) : 0}%` }} /></div><small>{summary.forwardCount} 条关联转发 · 当前节点最大承载的 {highestTraffic ? `${(summary.total / highestTraffic * 100).toFixed(0)}%` : "0%"}</small></div><div className="resource-bars"><ResourceBar label="CPU" value={nodeStats[String(node.id)]?.cpu || 0} /><ResourceBar label="MEMORY" value={nodeStats[String(node.id)]?.memory || 0} /></div><div className="node-card-actions"><button className="button button-quiet" onClick={() => onEdit(node)}><Settings2 size={14} /> 编辑节点</button><button className="button button-quiet" onClick={() => onRefresh(node)}><RefreshCw size={14} /> 刷新心跳</button><button className="button button-quiet" onClick={() => void onInstall(node)}><Terminal size={14} /> Linux 命令</button><button className="button button-quiet" onClick={() => void onInstall(node, "windows")}><Terminal size={14} /> Windows 命令</button></div></div>) : <div className="panel empty-large"><Router size={24} /><h3>还没有接入节点</h3><p>创建节点后，在服务器执行 Agent 安装命令即可开始上报。</p><button className="button button-primary" onClick={onCreate}><Plus size={16} /> 创建第一个节点</button></div>}</section></>;
 }
 function ResourceBar({ label, value }: { label: string; value: number }) { return <div className="resource-bar"><div><span>{label}</span><strong>{value ? `${value.toFixed(0)}%` : "--"}</strong></div><div className="bar-track"><i style={{ width: `${Math.min(100, Math.max(value ? 3 : 0, value))}%` }} /></div></div>; }
-function TunnelsView({ tunnels, forwards, nodes, onCreate, onManage, onDiagnose, onDelete }: any) { return <><section className="page-intro"><div><p className="eyebrow">ROUTE TOPOLOGY / 04</p><h2>隧道编排</h2><p className="muted">管理入口到出口的链路、流量倍率和运行参数。</p></div><button className="button button-primary" onClick={onCreate}><Plus size={16} /> 创建隧道</button></section><section className="tunnel-list">{tunnels.length ? tunnels.map((tunnel: ApiItem) => { const inNode = nodes.find((node: ApiItem) => node.id === tunnel.inNodeId); const outNode = nodes.find((node: ApiItem) => node.id === tunnel.outNodeId); const forwardCount = forwards.filter((forward: ApiItem) => Number(forward.tunnelId) === Number(tunnel.id)).length; const flowType = Number(tunnel.flowType || tunnel.flow || 2); const reverseRelay = Number(tunnel.type) === 3; const used = flowType === 1 ? Number(tunnel.inFlow || 0) : Number(tunnel.inFlow || 0) + Number(tunnel.outFlow || 0); const limit = Number(tunnel.flowLimitGb || 0); return <div className="panel tunnel-card" key={tunnel.id}><div className="tunnel-title"><span className="tunnel-id">T{String(tunnel.id).padStart(2, "0")}</span><div><h3>{tunnel.name || "未命名隧道"}</h3><p>{tunnel.protocol || "tcp"} · {forwardCount} 条转发承载</p></div><span className={`node-status ${Number(tunnel.status) === 1 ? "online" : "offline"}`}><StatusDot status={Number(tunnel.status) === 1} />{Number(tunnel.status) === 1 ? "可用" : "停用"}</span></div><div className="tunnel-path"><div><span>{reverseRelay ? "公网入口节点" : "入口节点"}</span><strong>{inNode?.name || tunnel.inIp || `Node-${tunnel.inNodeId}`}</strong><small>{tunnel.inIp || "-"}</small></div><div className="path-line"><i /><i /><i /><ChevronRight size={18} /></div><div><span>{reverseRelay ? "内网 Windows 节点" : "出口节点"}</span><strong>{outNode?.name || tunnel.outIp || `Node-${tunnel.outNodeId}`}</strong><small>{tunnel.outIp || "-"}</small></div></div><div className="tunnel-footer"><span><Gauge size={14} /> 流量 {formatBytes(used)} / {limit > 0 ? `${limit} GB` : "不限"}</span><span><Gauge size={14} /> {flowType === 1 ? "单向记录" : "双向记录"}</span><span><Gauge size={14} /> 统计倍率 {tunnel.trafficRatio || 1} 倍</span><span><Network size={14} /> {reverseRelay ? "内网反向中继" : tunnel.type === 2 ? "中继链路" : "直连出口"}</span><span><Gauge size={14} /> 限速 {Number(tunnel.speedLimitKbps) > 0 ? `${tunnel.speedLimitKbps} KB/s` : "不限"}</span><button className="text-button" onClick={() => onDiagnose(tunnel)}><Activity size={14} /> 诊断</button><button className="text-button" onClick={() => onManage(tunnel)}><Settings2 size={14} /> 管理</button><button className="text-button danger-text" onClick={() => onDelete(tunnel)}><X size={14} /> 删除</button></div></div>; }) : <div className="panel empty-large"><SlidersHorizontal size={24} /><h3>还没有隧道</h3><p>隧道用于组织节点之间的转发路径。</p><button className="button button-primary" onClick={onCreate}><Plus size={16} /> 创建隧道</button></div>}</section></>; }
+function TunnelsView({ readOnly = false, tunnels, forwards, nodes, onCreate, onManage, onDiagnose, onDelete }: any) { return <><section className="page-intro"><div><p className="eyebrow">ROUTE TOPOLOGY / 04</p><h2>隧道编排</h2><p className="muted">{readOnly ? "查看管理员分配给你的隧道和承载情况。" : "管理入口到出口的链路、流量倍率和运行参数。"}</p></div>{!readOnly && <button className="button button-primary" onClick={onCreate}><Plus size={16} /> 创建隧道</button>}</section><section className="tunnel-list">{tunnels.length ? tunnels.map((tunnel: ApiItem) => { const inNode = nodes.find((node: ApiItem) => node.id === tunnel.inNodeId); const outNode = nodes.find((node: ApiItem) => node.id === tunnel.outNodeId); const forwardCount = forwards.filter((forward: ApiItem) => Number(forward.tunnelId) === Number(tunnel.id)).length; const flowType = Number(tunnel.flowType || tunnel.flow || 2); const reverseRelay = Number(tunnel.type) === 3; const used = flowType === 1 ? Number(tunnel.inFlow || 0) : Number(tunnel.inFlow || 0) + Number(tunnel.outFlow || 0); const limit = Number(tunnel.flowLimitGb || 0); return <div className="panel tunnel-card" key={tunnel.id}><div className="tunnel-title"><span className="tunnel-id">T{String(tunnel.id).padStart(2, "0")}</span><div><h3>{tunnel.name || "未命名隧道"}</h3><p>{tunnel.protocol || "tcp"} · {forwardCount} 条转发承载</p></div><span className={`node-status ${Number(tunnel.status) === 1 ? "online" : "offline"}`}><StatusDot status={Number(tunnel.status) === 1} />{Number(tunnel.status) === 1 ? "可用" : "停用"}</span></div><div className="tunnel-path"><div><span>{reverseRelay ? "公网入口节点" : "入口节点"}</span><strong>{inNode?.name || tunnel.inIp || `Node-${tunnel.inNodeId}`}</strong><small>{tunnel.inIp || "-"}</small></div><div className="path-line"><i /><i /><i /><ChevronRight size={18} /></div><div><span>{reverseRelay ? "内网 Windows 节点" : "出口节点"}</span><strong>{outNode?.name || tunnel.outIp || `Node-${tunnel.outNodeId}`}</strong><small>{tunnel.outIp || "-"}</small></div></div><div className="tunnel-footer"><span><Gauge size={14} /> 流量 {formatBytes(used)} / {limit > 0 ? `${limit} GB` : "不限"}</span><span><Gauge size={14} /> {flowType === 1 ? "单向记录" : "双向记录"}</span><span><Gauge size={14} /> 统计倍率 {tunnel.trafficRatio || 1} 倍</span><span><Network size={14} /> {reverseRelay ? "内网反向中继" : tunnel.type === 2 ? "中继链路" : "直连出口"}</span><span><Gauge size={14} /> 限速 {Number(tunnel.speedLimitKbps) > 0 ? `${tunnel.speedLimitKbps} KB/s` : "不限"}</span>{readOnly ? <small className="table-secondary">只读</small> : <><button className="text-button" onClick={() => onDiagnose(tunnel)}><Activity size={14} /> 诊断</button><button className="text-button" onClick={() => onManage(tunnel)}><Settings2 size={14} /> 管理</button><button className="text-button danger-text" onClick={() => onDelete(tunnel)}><X size={14} /> 删除</button></>}</div></div>; }) : <div className="panel empty-large"><SlidersHorizontal size={24} /><h3>{readOnly ? "暂无已授权隧道" : "还没有隧道"}</h3><p>{readOnly ? "请联系管理员分配可用隧道。" : "隧道用于组织节点之间的转发路径。"}</p>{!readOnly && <button className="button button-primary" onClick={onCreate}><Plus size={16} /> 创建隧道</button>}</div>}</section></>; }
 function DiagnosticDrawer({ diagnostic, onClose }: { diagnostic: DiagnosticState; onClose: () => void }) {
   const targets = diagnosticTargets(diagnostic);
   const passed = targets.filter((target) => target.success).length;
