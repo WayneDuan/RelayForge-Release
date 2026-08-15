@@ -518,13 +518,12 @@ Agent 目录包含一个嵌套的 go-gost/x 模块，CI 使用 Go 1.23.4 构建 
 - 构建并推送多架构 .NET 10 后端镜像 wayneduan/relayforge-backend。
 - 构建、压缩并测试 Linux amd64、Linux arm64 和 Windows amd64 Agent。
 - 生成包含版本、下载地址和 SHA-256 的 agent-manifest.json，以及覆盖所有部署资产的 checksums.txt。
-- 将 Agent 二进制、安装脚本和 Compose 文件上传到 WayneDuan/RelayForge-Release。
+- 将 Agent 二进制、安装脚本和 Compose 文件上传到当前 GitHub 仓库的 Release。
 - 应用代码或 Agent 代码变更前必须先同步修改工作流中的 VERSION 和两个 Compose 文件的默认版本，并创建新版本；已发布版本不会被覆盖。只修改安装脚本或 Compose 文件时，流程只更新对应 Release 资产。
 
-如果源码仓库与发布仓库分开，发布仓库只用于部署资产，不要提交源码。Actions 至少需要以下凭据：
+Release 使用当前仓库的内置 `GITHUB_TOKEN`，工作流已为发布任务声明 `contents: write` 权限，无需额外配置 GitHub 发布令牌。Actions 只需要以下外部凭据：
 
 - Docker Hub 用户名和 Token：用于推送前后端镜像。
-- RELEASE_REPO_TOKEN：GitHub fine-grained token，只授予公开 Release 仓库的 Contents: Read and write 权限。
 
 修改 Agent 代码后，CI 会重新构建 Agent 并更新发布清单；只修改面板脚本或 Compose 文件时，可以只更新 Release 资产。
 

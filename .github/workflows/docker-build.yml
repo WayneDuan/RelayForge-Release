@@ -4,7 +4,7 @@ name: Build and Push Images Based on Version
 # code; an existing release version is treated as immutable.
 env:
   VERSION: "1.5.12"
-  RELEASE_REPO: "WayneDuan/RelayForge-Release"
+  RELEASE_REPO: ${{ github.repository }}
 
 concurrency:
   group: relayforge-release-${{ github.ref }}
@@ -41,13 +41,9 @@ jobs:
       - name: Check if tag exists and detect changes
         id: check-tag
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ -z "${GH_TOKEN}" ]]; then
-            echo "::error title=Missing release repository token::Configure RELEASE_REPO_TOKEN with access to the public release repository."
-            exit 1
-          fi
           if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
             echo "::error title=Stable release workflow cannot run here::Run this workflow from main only."
             exit 1
@@ -388,15 +384,10 @@ jobs:
 
       - name: Create Release
         env:
-          RELEASE_GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
           RELEASE_REPO="${{ env.RELEASE_REPO }}"
-
-          if [ -z "$RELEASE_GH_TOKEN" ]; then
-            echo "::error title=Missing release repository token::Create RELEASE_REPO_TOKEN with write access to ${RELEASE_REPO}."
-            exit 1
-          fi
 
           # The release job uses a shallow checkout, so check the remote tag explicitly.
           if git ls-remote --exit-code --refs origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
@@ -413,8 +404,6 @@ jobs:
               fi
             }
           fi
-
-          export GH_TOKEN="$RELEASE_GH_TOKEN"
 
           # GitHub cannot create a release in a repository with no commits.
           if ! gh api "repos/${RELEASE_REPO}/commits?per_page=1" >/dev/null 2>&1; then
@@ -484,7 +473,7 @@ jobs:
 
       - name: Update Release Files
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
           RELEASE_REPO="${{ env.RELEASE_REPO }}"
