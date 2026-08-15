@@ -189,7 +189,8 @@ show_menu() {
 }
 
 generate_random() {
-  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c48
+  local length="${1:-48}"
+  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c"$length"
 }
 
 sha256_file() {
@@ -318,6 +319,12 @@ get_config_params() {
     BACKEND_PORT=$(grep "^BACKEND_PORT=" .env | cut -d'=' -f2- || true)
     BACKEND_BIND_ADDRESS=$(grep "^BACKEND_BIND_ADDRESS=" .env | cut -d'=' -f2- || true)
 
+    if (( ${#DB_USER} > 32 )); then
+      DB_USER="${DB_USER:0:32}"
+      sed -i "s/^DB_USER=.*/DB_USER=$DB_USER/" .env
+      echo "检测到数据库用户名超过 MySQL 的 32 位限制，已截取为 32 位。"
+    fi
+
     if [[ -n "$DB_NAME" && -n "$DB_USER" && -n "$DB_PASSWORD" && -n "$JWT_SECRET" ]]; then
       DB_ROOT_PASSWORD=${DB_ROOT_PASSWORD:-$DB_PASSWORD}
       INTEGRATION_ENCRYPTION_KEY=${INTEGRATION_ENCRYPTION_KEY:-$JWT_SECRET}
@@ -345,8 +352,8 @@ get_config_params() {
   read -p "后端绑定地址（默认 127.0.0.1；节点直连请填写 0.0.0.0）: " BACKEND_BIND_ADDRESS
   BACKEND_BIND_ADDRESS=${BACKEND_BIND_ADDRESS:-127.0.0.1}
 
-  DB_NAME=$(generate_random)
-  DB_USER=$(generate_random)
+  DB_NAME=$(generate_random 48)
+  DB_USER=$(generate_random 32)
   DB_PASSWORD=$(generate_random)
   DB_ROOT_PASSWORD=$(generate_random)
   JWT_SECRET=$(generate_random)
@@ -424,6 +431,32 @@ wait_for_database() {
   return 1
 }
 
+sql_escape_string() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+sql_escape_identifier() {
+  printf '%s' "$1" | sed 's/`/``/g'
+}
+
+ensure_database_user() {
+  local sql_user sql_password sql_database
+  sql_user=$(sql_escape_string "$DB_USER")
+  sql_password=$(sql_escape_string "$DB_PASSWORD")
+  sql_database=$(sql_escape_identifier "$DB_NAME")
+
+  if ! $DOCKER_CMD exec -T mysql mysql -uroot -p"$DB_ROOT_PASSWORD" <<SQL
+CREATE USER IF NOT EXISTS '$sql_user'@'%' IDENTIFIED WITH caching_sha2_password BY '$sql_password';
+ALTER USER '$sql_user'@'%' IDENTIFIED WITH caching_sha2_password BY '$sql_password';
+GRANT ALL PRIVILEGES ON \`$sql_database\`.* TO '$sql_user'@'%';
+FLUSH PRIVILEGES;
+SQL
+  then
+    echo "错误：无法创建或更新数据库业务账号。" >&2
+    return 1
+  fi
+}
+
 wait_for_backend() {
   for i in {1..90}; do
     if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/health" >/dev/null 2>&1; then
@@ -469,7 +502,6 @@ INITIAL_ADMIN_USERNAME=$ADMIN_USERNAME
 INITIAL_ADMIN_PASSWORD_B64=$(printf '%s' "$ADMIN_PASSWORD" | base64 | tr -d '\n')
 EOF
   chmod 600 .env
-  trap 'remove_initial_admin_config >/dev/null 2>&1 || true' EXIT
 
   $DOCKER_CMD pull
   echo "✅ Docker 镜像拉取完成"
@@ -486,6 +518,7 @@ EOF
 
   echo "等待数据库启动并创建管理员账号..."
   wait_for_database
+  ensure_database_user
   wait_for_backend
   remove_initial_admin_config
   printf '\nADMIN_CONFIGURED=1\n' >> .env
@@ -562,6 +595,10 @@ update_panel() {
 
   echo "🗄️ 确保数据库服务运行..."
   if ! $DOCKER_CMD up -d mysql; then
+    restore_panel_compose
+    return 1
+  fi
+  if ! wait_for_database || ! ensure_database_user; then
     restore_panel_compose
     return 1
   fi
