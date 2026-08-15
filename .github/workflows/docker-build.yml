@@ -1,0 +1,539 @@
+name: Build and Push Images Based on Version
+
+# Stable release version. Bump this value before changing application or Agent
+# code; an existing release version is treated as immutable.
+env:
+  VERSION: "1.5.12"
+  RELEASE_REPO: "WayneDuan/RelayForge-Release"
+
+concurrency:
+  group: relayforge-release-${{ github.ref }}
+  cancel-in-progress: false
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Check Version and Decide Build
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ env.VERSION }}
+      should_build: ${{ steps.check-tag.outputs.should_build }}
+      should_build_gost: ${{ steps.check-tag.outputs.should_build_gost }}
+      should_update_files: ${{ steps.check-tag.outputs.should_update_files }}
+      tag_exists: ${{ steps.check-tag.outputs.tag_exists }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Display version
+        run: |
+          echo "Current version: ${{ env.VERSION }}"
+
+      - name: Check if tag exists and detect changes
+        id: check-tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN}" ]]; then
+            echo "::error title=Missing release repository token::Configure RELEASE_REPO_TOKEN with access to the public release repository."
+            exit 1
+          fi
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error title=Stable release workflow cannot run here::Run this workflow from main only."
+            exit 1
+          fi
+          VERSION="${{ env.VERSION }}"
+          TAG_REF="refs/tags/${VERSION}"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error title=Invalid version::VERSION must be a semantic version such as 1.5.12."
+            exit 1
+          fi
+          AGENT_VERSION=$(sed -n 's/^const AgentVersion = "\([^\"]*\)"$/\1/p' go-gost/version.go)
+          if [[ ! "$AGENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error title=Invalid Agent version::AgentVersion must be a semantic version."
+            exit 1
+          fi
+          if ! git rev-parse --verify "${TAG_REF}^{commit}" >/dev/null 2>&1; then
+            PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$' | grep -Fxv "$VERSION" | head -n 1 || true)
+            if [[ -n "$PREVIOUS_TAG" ]] && git cat-file -e "${PREVIOUS_TAG}:go-gost/version.go" 2>/dev/null; then
+              PREVIOUS_AGENT_VERSION=$(git show "${PREVIOUS_TAG}:go-gost/version.go" | sed -n 's/^const AgentVersion = "\([^\"]*\)"$/\1/p')
+              if ! git diff --quiet "${PREVIOUS_TAG}" HEAD -- go-gost && [[ "$AGENT_VERSION" == "$PREVIOUS_AGENT_VERSION" ]]; then
+                echo "::error title=Agent version bump required::go-gost changed since ${PREVIOUS_TAG}, but AgentVersion is still ${AGENT_VERSION}."
+                exit 1
+              fi
+            fi
+          fi
+          expected_tag="\${RELAYFORGE_VERSION:-${VERSION}}"
+          for compose_file in docker-compose-v4.yml docker-compose-v6.yml; do
+            grep -Fq "wayneduan/relayforge-backend:${expected_tag}" "$compose_file"
+            grep -Fq "wayneduan/relayforge-frontend:${expected_tag}" "$compose_file"
+          done
+
+          echo "should_build=false" >> "$GITHUB_OUTPUT"
+          echo "should_build_gost=false" >> "$GITHUB_OUTPUT"
+          echo "should_update_files=false" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse --verify "${TAG_REF}^{commit}" >/dev/null 2>&1; then
+            echo "Tag ${VERSION} already exists"
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+            TAG_COMMIT=$(git rev-parse "${TAG_REF}^{commit}")
+            echo "Tag commit: $TAG_COMMIT"
+            echo "Current HEAD: $(git rev-parse HEAD)"
+
+            if ! gh release view "${VERSION}" --repo "${{ env.RELEASE_REPO }}" >/dev/null 2>&1; then
+              if [[ "$TAG_COMMIT" != "$(git rev-parse HEAD)" ]]; then
+                echo "::error title=Release is missing::Release ${VERSION} is missing, but its source tag does not point at HEAD. Restore the release or bump VERSION before publishing."
+                exit 1
+              fi
+              echo "Public release ${VERSION} is missing; will build all release assets"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+              echo "should_build_gost=true" >> $GITHUB_OUTPUT
+            else
+              HAS_RELEASE_CHANGE=false
+              HAS_AGENT_CHANGE=false
+              HAS_APPLICATION_CHANGE=false
+              while IFS= read -r path; do
+                case "$path" in
+                  install.sh|install-windows.ps1|panel_install.sh|docker-compose-v4.yml|docker-compose-v6.yml)
+                    HAS_RELEASE_CHANGE=true
+                    ;;
+                  go-gost/*)
+                    HAS_AGENT_CHANGE=true
+                    ;;
+                  README.md|CONTRIBUTING.md|LICENSE|NOTICE|PROMOTION.md|SECURITY.md|doc/*|docs/*|.DS_Store|.gitignore|.dockerignore|.github/*)
+                    ;;
+                  *)
+                    HAS_APPLICATION_CHANGE=true
+                    ;;
+                esac
+              done < <(git diff --name-only --diff-filter=ACMRT "${TAG_COMMIT}" HEAD)
+
+              if [[ "$HAS_APPLICATION_CHANGE" == true || "$HAS_AGENT_CHANGE" == true ]]; then
+                echo "::error title=Version bump required::Application or Agent code changed after tag ${VERSION}. Bump VERSION and create a new release instead of overwriting ${VERSION}."
+                git diff --stat "${TAG_COMMIT}" HEAD || true
+                exit 1
+              elif [[ "$HAS_RELEASE_CHANGE" == true ]]; then
+                echo "Only deployment assets changed; updating the existing release assets"
+                echo "should_update_files=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "No publishable files changed since tag ${VERSION}"
+              fi
+            fi
+          else
+            echo "Tag ${VERSION} does not exist, will build all components"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "should_build_gost=true" >> $GITHUB_OUTPUT
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-gost:
+    name: Build & Compress GOST Binary
+    needs: check-version
+    if: needs.check-version.outputs.should_build_gost == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.23.4'
+
+      - name: Cache Go modules
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install UPX
+        run: |
+          UPX_ARCHIVE=upx-4.2.1-amd64_linux.tar.xz
+          UPX_URL=https://github.com/upx/upx/releases/download/v4.2.1/${UPX_ARCHIVE}
+          UPX_SHA256=936e67a23d72338dad3304526a29f405e44e440a9983bbdb2566657d015cc56d
+          curl --fail --location --proto '=https' --tlsv1.2 "$UPX_URL" -o "$UPX_ARCHIVE"
+          echo "$UPX_SHA256  $UPX_ARCHIVE" | sha256sum --check --status
+          tar -xf "$UPX_ARCHIVE"
+          sudo mv upx-4.2.1-amd64_linux/upx /usr/local/bin/
+          rm -rf upx-4.2.1-amd64_linux*
+
+      - name: Test Agent
+        working-directory: ./go-gost
+        run: go test ./...
+
+      - name: Build GOST binary (AMD64)
+        working-directory: ./go-gost
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o gost-amd64
+
+      - name: Build GOST binary (ARM64)
+        working-directory: ./go-gost
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o gost-arm64
+
+      - name: Build GOST binary (Windows AMD64)
+        working-directory: ./go-gost
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o gost-windows-amd64.exe
+
+      - name: Compress with UPX (AMD64)
+        working-directory: ./go-gost
+        run: |
+          upx --best --lzma gost-amd64
+
+      - name: Compress with UPX (ARM64)
+        working-directory: ./go-gost
+        run: |
+          upx --best --lzma gost-arm64
+
+      - name: Compress with UPX (Windows AMD64)
+        working-directory: ./go-gost
+        run: |
+          upx --best --lzma gost-windows-amd64.exe
+
+      - name: Smoke test compressed Linux Agent
+        working-directory: ./go-gost
+        run: |
+          test -x gost-amd64
+          ./gost-amd64 -V
+
+      - name: Upload GOST AMD64 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: gost-binary-amd64
+          path: ./go-gost/gost-amd64
+
+      - name: Upload GOST ARM64 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: gost-binary-arm64
+          path: ./go-gost/gost-arm64
+
+      - name: Upload GOST Windows AMD64 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: gost-binary-windows-amd64
+          path: ./go-gost/gost-windows-amd64.exe
+
+  build-vite:
+    name: Build & Push Vite Frontend
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Validate Docker Hub credentials
+        env:
+          DOCKER_HUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKER_HUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN || secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKER_HUB_USERNAME" ]; then
+            echo "::error title=Missing Docker Hub secret::DOCKER_HUB_USERNAME is not configured."
+            exit 1
+          fi
+          if [ -z "$DOCKER_HUB_TOKEN" ]; then
+            echo "::error title=Missing Docker Hub secret::DOCKER_HUB_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKER_HUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN || secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Vite Docker images
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            -t wayneduan/relayforge-frontend:${VERSION} \
+            ./vite-frontend
+
+  build-dotnet:
+    name: Build & Push .NET 10 Backend
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Validate Docker Hub credentials
+        env:
+          DOCKER_HUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKER_HUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN || secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKER_HUB_USERNAME" ]; then
+            echo "::error title=Missing Docker Hub secret::DOCKER_HUB_USERNAME is not configured."
+            exit 1
+          fi
+          if [ -z "$DOCKER_HUB_TOKEN" ]; then
+            echo "::error title=Missing Docker Hub secret::DOCKER_HUB_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKER_HUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN || secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push .NET Docker images
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            -t wayneduan/relayforge-backend:${VERSION} \
+            ./dotnet-backend
+
+  create-release:
+    name: Create Release and Tag
+    needs: [check-version, build-gost, build-vite, build-dotnet]
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download GOST AMD64 binary
+        uses: actions/download-artifact@v8
+        with:
+          name: gost-binary-amd64
+          path: ./artifacts/amd64
+
+      - name: Download GOST ARM64 binary
+        uses: actions/download-artifact@v8
+        with:
+          name: gost-binary-arm64
+          path: ./artifacts/arm64
+
+      - name: Download GOST Windows AMD64 binary
+        uses: actions/download-artifact@v8
+        with:
+          name: gost-binary-windows-amd64
+          path: ./artifacts/windows-amd64
+
+      - name: Rename binaries
+        run: |
+          mv ./artifacts/amd64/gost-amd64 ./artifacts/gost-amd64
+          mv ./artifacts/arm64/gost-arm64 ./artifacts/gost-arm64
+          mv ./artifacts/windows-amd64/gost-windows-amd64.exe ./artifacts/gost-windows-amd64.exe
+
+      - name: Generate release notes
+        run: bash ./.github/generate-release-notes.sh "${{ needs.check-version.outputs.version }}" ./artifacts/release-notes.md
+
+      - name: Generate Agent update manifest
+        run: |
+          AGENT_VERSION=$(sed -n 's/^const AgentVersion = "\([^"]*\)"$/\1/p' go-gost/version.go)
+          test -n "$AGENT_VERSION"
+          SHA_AMD64=$(sha256sum ./artifacts/gost-amd64 | awk '{print $1}')
+          SHA_ARM64=$(sha256sum ./artifacts/gost-arm64 | awk '{print $1}')
+          SHA_WINDOWS_AMD64=$(sha256sum ./artifacts/gost-windows-amd64.exe | awk '{print $1}')
+          cat > ./artifacts/agent-manifest.json <<EOF
+          {
+            "version": "$AGENT_VERSION",
+            "assets": {
+              "linux-amd64": {
+                "url": "gost-amd64",
+                "sha256": "$SHA_AMD64"
+              },
+              "linux-arm64": {
+                "url": "gost-arm64",
+                "sha256": "$SHA_ARM64"
+              },
+              "windows-amd64": {
+                "url": "gost-windows-amd64.exe",
+                "sha256": "$SHA_WINDOWS_AMD64"
+              }
+            }
+          }
+          EOF
+          {
+            (cd ./artifacts && sha256sum gost-amd64 gost-arm64 gost-windows-amd64.exe agent-manifest.json)
+            sha256sum docker-compose-v4.yml docker-compose-v6.yml install.sh install-windows.ps1 panel_install.sh | sed 's#  ./#  #'
+          } > ./artifacts/checksums.txt
+
+      - name: Create Release
+        env:
+          RELEASE_GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          RELEASE_REPO="${{ env.RELEASE_REPO }}"
+
+          if [ -z "$RELEASE_GH_TOKEN" ]; then
+            echo "::error title=Missing release repository token::Create RELEASE_REPO_TOKEN with write access to ${RELEASE_REPO}."
+            exit 1
+          fi
+
+          # The release job uses a shallow checkout, so check the remote tag explicitly.
+          if git ls-remote --exit-code --refs origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "Tag ${VERSION} already exists on the source repository"
+          else
+            if ! git rev-parse "${VERSION}" >/dev/null 2>&1; then
+              git tag "${VERSION}" ${{ github.sha }}
+            fi
+            git push origin "${VERSION}" || {
+              if git ls-remote --exit-code --refs origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+                echo "Tag ${VERSION} was created by another run"
+              else
+                exit 1
+              fi
+            }
+          fi
+
+          export GH_TOKEN="$RELEASE_GH_TOKEN"
+
+          # GitHub cannot create a release in a repository with no commits.
+          if ! gh api "repos/${RELEASE_REPO}/commits?per_page=1" >/dev/null 2>&1; then
+            echo "Initializing release repository ${RELEASE_REPO}"
+            RELEASE_README_B64=$(printf '%s\n' '# RelayForge Release' '' 'This repository contains public deployment assets for RelayForge.' | base64 -w 0)
+            if README_SHA=$(gh api "repos/${RELEASE_REPO}/contents/README.md" --jq '.sha' 2>/dev/null); then
+              gh api --method PUT "repos/${RELEASE_REPO}/contents/README.md" \
+                -f message="Initialize release repository" \
+                -f content="$RELEASE_README_B64" \
+                -f sha="$README_SHA" >/dev/null
+            else
+              gh api --method PUT "repos/${RELEASE_REPO}/contents/README.md" \
+                -f message="Initialize release repository" \
+                -f content="$RELEASE_README_B64" >/dev/null
+            fi
+          fi
+
+          if gh release view "${VERSION}" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
+            echo "Public release ${VERSION} already exists"
+          else
+            gh release create "${VERSION}" \
+              --title "Release ${VERSION}" \
+              --notes-file ./artifacts/release-notes.md \
+              --repo "$RELEASE_REPO"
+          fi
+
+          gh release edit "${VERSION}" --notes-file ./artifacts/release-notes.md --repo "$RELEASE_REPO"
+
+          if gh release view "${VERSION}" --repo "$RELEASE_REPO" --json assets --jq '.assets[].name' | grep -Fxq 'gost.sql'; then
+            echo "Removing legacy database schema asset from Release ${VERSION}"
+            gh release delete-asset "${VERSION}" gost.sql --yes --repo "$RELEASE_REPO"
+          fi
+
+          # 上传所有文件到 release
+          echo "📤 上传 GOST 二进制文件..."
+          gh release upload "${VERSION}" ./artifacts/gost-amd64 --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./artifacts/gost-arm64 --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./artifacts/gost-windows-amd64.exe --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./artifacts/agent-manifest.json --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./artifacts/checksums.txt --clobber --repo "$RELEASE_REPO"
+
+          echo "📤 上传安装脚本..."
+          gh release upload "${VERSION}" ./install.sh --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./install-windows.ps1 --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./panel_install.sh --clobber --repo "$RELEASE_REPO"
+
+          echo "📤 上传 Docker Compose 配置文件..."
+          gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber --repo "$RELEASE_REPO"
+
+          echo "✅ 所有文件已上传到 Release ${VERSION}"
+
+  update-release-files:
+    name: Update Release Files Only
+    needs: check-version
+    if: needs.check-version.outputs.should_update_files == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        run: bash ./.github/generate-release-notes.sh "${{ needs.check-version.outputs.version }}" ./release-notes.md
+
+      - name: Update Release Files
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          RELEASE_REPO="${{ env.RELEASE_REPO }}"
+
+          if ! gh release view "${VERSION}" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
+            gh release create "${VERSION}" \
+              --title "Release ${VERSION}" \
+              --notes-file ./release-notes.md \
+              --repo "$RELEASE_REPO"
+          fi
+
+          gh release edit "${VERSION}" --notes-file ./release-notes.md --repo "$RELEASE_REPO"
+
+          if gh release view "${VERSION}" --repo "$RELEASE_REPO" --json assets --jq '.assets[].name' | grep -Fxq 'gost.sql'; then
+            echo "Removing legacy database schema asset from Release ${VERSION}"
+            gh release delete-asset "${VERSION}" gost.sql --yes --repo "$RELEASE_REPO"
+          fi
+
+          echo "📤 更新 Release ${VERSION} 中的脚本和配置文件..."
+
+          # 上传安装脚本（覆盖）
+          echo "📤 更新安装脚本..."
+          gh release upload "${VERSION}" ./install.sh --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./install-windows.ps1 --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./panel_install.sh --clobber --repo "$RELEASE_REPO"
+
+          # 上传 Docker Compose 配置文件（覆盖）
+          echo "📤 更新 Docker Compose 配置文件..."
+          gh release upload "${VERSION}" ./docker-compose-v4.yml --clobber --repo "$RELEASE_REPO"
+          gh release upload "${VERSION}" ./docker-compose-v6.yml --clobber --repo "$RELEASE_REPO"
+
+          echo "🔐 更新部署文件 SHA-256..."
+          mkdir -p ./artifacts/release-assets
+          gh release download "${VERSION}" --repo "$RELEASE_REPO" --dir ./artifacts/release-assets --clobber
+          for asset in gost-amd64 gost-arm64 gost-windows-amd64.exe agent-manifest.json; do
+            if [[ ! -f "./artifacts/release-assets/${asset}" ]]; then
+              echo "::error title=Release asset missing::${asset} is required to preserve the release checksum manifest."
+              exit 1
+            fi
+          done
+          rm -f ./artifacts/release-assets/checksums.txt
+          sha256sum ./artifacts/release-assets/gost-amd64 ./artifacts/release-assets/gost-arm64 ./artifacts/release-assets/gost-windows-amd64.exe ./artifacts/release-assets/agent-manifest.json | sed 's#  ./artifacts/release-assets/##' > ./artifacts/checksums.txt
+          for asset in docker-compose-v4.yml docker-compose-v6.yml install.sh install-windows.ps1 panel_install.sh; do
+            tmp="./artifacts/checksums.txt.tmp"
+            awk -v asset="$asset" '$2 != asset { print }' ./artifacts/checksums.txt > "$tmp"
+            sha256sum "$asset" >> "$tmp"
+            mv "$tmp" ./artifacts/checksums.txt
+          done
+          gh release upload "${VERSION}" ./artifacts/checksums.txt --clobber --repo "$RELEASE_REPO"
+
+          echo "✅ 文件更新完成！Release ${VERSION} 中的脚本和配置已更新"
+          echo "ℹ️ Docker 镜像和 GOST 二进制未重新构建"

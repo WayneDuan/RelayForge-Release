@@ -1,0 +1,3 @@
+The frontend keeps its own MIT license file because parts of its initial UI
+scaffold originated from a separately licensed template. Review the source and
+dependency attribution before redistributing a substantially changed frontend.

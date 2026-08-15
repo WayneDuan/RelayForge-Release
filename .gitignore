@@ -1,0 +1,33 @@
+# Operating-system and editor files
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build output and package manager state
+dotnet-backend/bin/
+dotnet-backend/obj/
+vite-frontend/node_modules/
+vite-frontend/dist/
+go-gost/go-modules.json
+go-gost/gost-*
+go-gost/*.exe
+*.dll
+*.pdb
+
+# Local deployment and backup artifacts
+*.download
+*.new
+*.previous
+*.refresh
+*.sql
+database_backup_*.sql
+

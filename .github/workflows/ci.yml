@@ -1,0 +1,85 @@
+name: Continuous Integration
+
+on:
+  pull_request:
+  push:
+    branches: [main, beta]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: vite-frontend/package-lock.json
+      - run: npm ci
+        working-directory: vite-frontend
+      - run: npm run lint
+        working-directory: vite-frontend
+      - run: npm run build
+        working-directory: vite-frontend
+      - run: npm audit --audit-level=high
+        working-directory: vite-frontend
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore
+        working-directory: dotnet-backend
+      - run: dotnet build --configuration Release --no-restore
+        working-directory: dotnet-backend
+      - run: dotnet list package --vulnerable --include-transitive
+        working-directory: dotnet-backend
+
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go-gost/go.mod
+          cache-dependency-path: go-gost/go.sum
+      - run: go test ./...
+        working-directory: go-gost
+      - run: go list -json -m all > go-modules.json
+        working-directory: go-gost
+      - run: go vet ./...
+        working-directory: go-gost
+
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -eu
+          export DB_NAME=relayforge DB_USER=relayforge DB_PASSWORD=example-db-password
+          export DB_ROOT_PASSWORD=example-root-password JWT_SECRET=example-jwt-secret-012345678901234567890123
+          export INTEGRATION_ENCRYPTION_KEY=example-integration-key-012345678901234567890
+          docker compose -f docker-compose-v4.yml config >/dev/null
+          docker compose -f docker-compose-v6.yml config >/dev/null
+      - run: git diff --check
+      - run: bash -n install.sh panel_install.sh
+      - name: Parse Windows installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD 'install-windows.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }

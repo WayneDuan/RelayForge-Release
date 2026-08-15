@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>RelayForge / 铸流</title>
+    <script>
+      // 防止暗黑模式闪烁：在页面加载前立即应用系统主题
+      (function() {
+        // 立即检测系统主题并应用
+        const isDarkMode = false;
+        
+        // 立即设置主题类，避免闪烁
+        if (isDarkMode) {
+          document.documentElement.classList.add('dark');
+          document.documentElement.style.colorScheme = 'dark';
+        } else {
+          document.documentElement.classList.remove('dark');
+          document.documentElement.style.colorScheme = 'light';
+        }
+        
+        // 监听系统主题变化
+      })();
+    </script>
+    <style>
+      /* 防止页面闪烁的基础样式 */
+      :root {
+        --toaster-bg: #ffffff;
+        --toaster-color: #000000;
+        --toaster-border: #e5e7eb;
+      }
+      
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #eef4f7;
+        color: #102938;
+        transition: background-color 0.2s ease, color 0.2s ease;
+        /* 禁用弹性滚动 */
+        overscroll-behavior: none;
+        -webkit-overflow-scrolling: touch;
+      }
+      
+      #root {
+        min-height: 100vh;
+        background-color: inherit;
+        /* 确保根元素也禁用弹性滚动 */
+        overscroll-behavior: none;
+      }
+
+      /* 使用动态视口单位，避免移动端地址栏导致的额外滚动 */
+      @supports (height: 100dvh) {
+        #root { min-height: 100dvh; }
+      }
+
+      /* 移动端浏览器兼容 */
+      @supports (-webkit-touch-callout: none) {
+        #root { min-height: -webkit-fill-available; }
+      }
+      
+      /* 防止加载时的闪烁 */
+      * {
+        box-sizing: border-box;
+      }
+      
+      /* 确保在主题切换时平滑过渡 */
+      html {
+        transition: color-scheme 0.2s ease;
+        /* 禁用整个页面的弹性滚动 */
+        overscroll-behavior: none;
+      }
+      
+      /* 移动端滚动优化 */
+      @media (max-width: 768px) {
+        html, body {
+          overscroll-behavior: none;
+          -webkit-overflow-scrolling: touch;
+        }
+        
+        /* 确保固定定位的元素不受滚动影响 */
+        .fixed {
+          overscroll-behavior: none;
+        }
+      }
+    </style>
+    <meta key="title" content="RelayForge / 铸流" property="og:title" />
+    <meta
+      content="RelayForge 私人转发控制面板"
+      property="og:description"
+    />
+    <meta
+      content="RelayForge 私人转发控制面板"
+      name="description"
+    />
+    <meta
+      key="viewport"
+      content="viewport-fit=cover, width=device-width, initial-scale=1.0, user-scalable=no"
+      name="viewport"
+    />
+    <link href="/favicon.ico" rel="icon" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

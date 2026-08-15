@@ -1,0 +1,14 @@
+RelayForge
+Copyright 2024-2026 RelayForge Contributors
+
+This distribution includes the Go GOST agent and third-party dependencies.
+The `go-gost/` tree is derived from GOST and is distributed under the MIT
+License in `go-gost/LICENSE`. Their original license and attribution notices
+remain applicable. Generate a complete dependency inventory for a release with:
+
+  go list -m all
+  npm ls --all
+
+The frontend directory contains a separate MIT license file retained with the
+frontend source. Verify and update third-party attribution when replacing the
+frontend template or adding bundled assets.

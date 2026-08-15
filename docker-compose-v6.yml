@@ -1,0 +1,74 @@
+services:
+  mysql:
+    image: mysql:8.4.6
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: ${DB_NAME:?DB_NAME is required}
+      MYSQL_USER: ${DB_USER:?DB_USER is required}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=1000
+      --innodb_buffer_pool_size=256M
+    networks:
+      - gost-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 10s
+      retries: 10
+
+  backend:
+    image: wayneduan/relayforge-backend:${RELAYFORGE_VERSION:-1.5.12}
+    restart: unless-stopped
+    environment:
+      DB_HOST: mysql
+      DB_NAME: ${DB_NAME:?DB_NAME is required}
+      DB_USER: ${DB_USER:?DB_USER is required}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      DB_SSL_MODE: ${DB_SSL_MODE:-Preferred}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      INTEGRATION_ENCRYPTION_KEY: ${INTEGRATION_ENCRYPTION_KEY:?INTEGRATION_ENCRYPTION_KEY is required}
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-}
+      INITIAL_ADMIN_PASSWORD_B64: ${INITIAL_ADMIN_PASSWORD_B64:-}
+      Panel__RequireHttps: ${PANEL_REQUIRE_HTTPS:-false}
+      XUI_ALLOW_PRIVATE_NETWORKS: ${XUI_ALLOW_PRIVATE_NETWORKS:-false}
+      ASPNETCORE_ENVIRONMENT: Production
+    ports:
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-6315}:6365"
+    volumes: []
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - gost-network
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:6365/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    image: wayneduan/relayforge-frontend:${RELAYFORGE_VERSION:-1.5.12}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-6311}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - gost-network
+
+
+volumes:
+  mysql_data:
+    driver: local
+networks:
+  gost-network:
+    driver: bridge
+    enable_ipv6: true

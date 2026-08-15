@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /vite-frontend
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: nuget
+    directory: /dotnet-backend
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /go-gost
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /go-gost/x
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /dotnet-backend
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: docker
+    directory: /vite-frontend
+    schedule:
+      interval: monthly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
