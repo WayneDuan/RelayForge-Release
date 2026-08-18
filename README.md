@@ -4,6 +4,12 @@ RelayForge 是面向自有节点、端口转发和内网穿透场景的转发控
 
 RelayForge 以免费、自部署、可审计为目标开放源码。Docker 镜像、Compose 文件、节点二进制和安装脚本可以从 Release 仓库获取，也可以由使用者自行构建。
 
+## 托管平台
+
+不想自行部署和维护控制面板的用户，可以使用我们的 [RelayForge 托管平台](https://relay.yingboxs.com/)。平台提供账号、工作区、节点、隧道、转发、审计和套餐账单等管理能力，适合快速开始使用 RelayForge。
+
+托管平台只负责账号和控制面能力，不承载用户节点之间的 TCP/UDP 转发流量；使用前仍需准备自己的节点并运行 RelayForge Agent。
+
 ## 问题反馈
 
 使用过程中遇到问题或有改进建议，欢迎加入我们的 [Telegram 频道](https://t.me/relayforged) 反馈交流。
