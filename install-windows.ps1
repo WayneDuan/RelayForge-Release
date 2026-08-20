@@ -71,6 +71,19 @@ function Get-AssetChecksum {
     return $null
 }
 
+function Get-ResponseText {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Response
+    )
+
+    if ($Response.Content -is [byte[]]) {
+        return [Text.Encoding]::UTF8.GetString($Response.Content)
+    }
+
+    return [string]$Response.Content
+}
+
 if ([string]::IsNullOrWhiteSpace($PanelAddress) -or [string]::IsNullOrWhiteSpace($Secret)) {
     throw "PanelAddress and Secret are required unless -Uninstall is used."
 }
@@ -91,13 +104,15 @@ if ((Get-Item -LiteralPath $temporary).Length -eq 0) {
     Remove-Item -LiteralPath $temporary -Force
     throw "The Agent download is empty."
 }
-$checksumText = (Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri $ChecksumsUrl).Content
+$checksumResponse = Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri $ChecksumsUrl
+$checksumText = Get-ResponseText -Response $checksumResponse
 $expectedHash = Get-AssetChecksum -ChecksumText $checksumText -AssetName "gost-windows-amd64.exe"
 if (-not $expectedHash) {
     # Older releases may have checksums.txt generated before the Windows asset
     # was added. The agent manifest still carries the same binary hash.
     try {
-        $manifest = ((Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri $ManifestUrl).Content | ConvertFrom-Json)
+        $manifestResponse = Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri $ManifestUrl
+        $manifest = (Get-ResponseText -Response $manifestResponse) | ConvertFrom-Json
         $manifestHash = [string]$manifest.assets.'windows-amd64'.sha256
         if ($manifestHash -match "^[A-Fa-f0-9]{64}$") {
             $expectedHash = $manifestHash.ToUpperInvariant()
