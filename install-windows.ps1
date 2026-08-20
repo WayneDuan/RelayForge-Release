@@ -55,6 +55,22 @@ if (-not [Uri]::TryCreate($ReleaseBaseUrl, [UriKind]::Absolute, [ref]$releaseUri
 $ChecksumsUrl = "$ReleaseBaseUrl/checksums.txt"
 $ManifestUrl = "$ReleaseBaseUrl/agent-manifest.json"
 
+function Get-AssetChecksum {
+    param(
+        [string]$ChecksumText,
+        [string]$AssetName
+    )
+
+    $escapedAssetName = [regex]::Escape($AssetName)
+    foreach ($line in ($ChecksumText -split "`r?`n")) {
+        if ($line -match "^\s*([A-Fa-f0-9]{64})\s+\*?(?:\.\/)?$escapedAssetName\s*$") {
+            return $Matches[1].ToUpperInvariant()
+        }
+    }
+
+    return $null
+}
+
 if ([string]::IsNullOrWhiteSpace($PanelAddress) -or [string]::IsNullOrWhiteSpace($Secret)) {
     throw "PanelAddress and Secret are required unless -Uninstall is used."
 }
@@ -76,15 +92,23 @@ if ((Get-Item -LiteralPath $temporary).Length -eq 0) {
     throw "The Agent download is empty."
 }
 $checksumText = (Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri $ChecksumsUrl).Content
-$checksumLine = $checksumText -split "`r?`n" | Where-Object { $_ -match "\s+gost-windows-amd64\.exe$" } | Select-Object -First 1
-if (-not $checksumLine) {
-    Remove-Item -LiteralPath $temporary -Force
-    throw "The release checksums do not contain gost-windows-amd64.exe."
+$expectedHash = Get-AssetChecksum -ChecksumText $checksumText -AssetName "gost-windows-amd64.exe"
+if (-not $expectedHash) {
+    # Older releases may have checksums.txt generated before the Windows asset
+    # was added. The agent manifest still carries the same binary hash.
+    try {
+        $manifest = ((Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri $ManifestUrl).Content | ConvertFrom-Json)
+        $manifestHash = [string]$manifest.assets.'windows-amd64'.sha256
+        if ($manifestHash -match "^[A-Fa-f0-9]{64}$") {
+            $expectedHash = $manifestHash.ToUpperInvariant()
+        }
+    } catch {
+        $expectedHash = $null
+    }
 }
-$expectedHash = ($checksumLine -split "\s+")[0].ToUpperInvariant()
-if ($expectedHash -notmatch "^[A-F0-9]{64}$") {
+if (-not $expectedHash) {
     Remove-Item -LiteralPath $temporary -Force
-    throw "The release checksum is invalid."
+    throw "The release does not contain a valid SHA-256 for gost-windows-amd64.exe."
 }
 $actualHash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToUpperInvariant()
 if ($actualHash -ne $expectedHash) {
