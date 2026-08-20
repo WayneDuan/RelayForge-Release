@@ -525,7 +525,10 @@ jobs:
           echo "🔐 更新部署文件 SHA-256..."
           mkdir -p ./artifacts/release-assets
           gh release download "${VERSION}" --repo "$RELEASE_REPO" --dir ./artifacts/release-assets --clobber
-          for asset in gost-amd64 gost-arm64 gost-windows-amd64.exe agent-manifest.json; do
+          # Older releases may predate agent-manifest.json. Rebuild it from
+          # the published binaries so a deployment-only update can repair
+          # the complete Agent checksum set.
+          for asset in gost-amd64 gost-arm64 gost-windows-amd64.exe; do
             if [[ ! -f "./artifacts/release-assets/${asset}" ]]; then
               echo "::error title=Release asset missing::${asset} is required to preserve the release checksum manifest."
               exit 1
