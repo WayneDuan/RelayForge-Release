@@ -108,7 +108,7 @@ if (-not $expectedHash) {
 }
 if (-not $expectedHash) {
     Remove-Item -LiteralPath $temporary -Force
-    throw "The release does not contain a valid SHA-256 for gost-windows-amd64.exe."
+    throw "The release does not contain a valid SHA-256 for gost-windows-amd64.exe in checksums.txt or agent-manifest.json."
 }
 $actualHash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToUpperInvariant()
 if ($actualHash -ne $expectedHash) {

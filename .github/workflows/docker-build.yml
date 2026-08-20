@@ -3,7 +3,7 @@ name: Build and Push Images Based on Version
 # Stable release version. Bump this value before changing application or Agent
 # code; an existing release version is treated as immutable.
 env:
-  VERSION: "1.5.13"
+  VERSION: "1.5.14"
   RELEASE_REPO: ${{ github.repository }}
 
 concurrency:
@@ -531,6 +531,31 @@ jobs:
               exit 1
             fi
           done
+          AGENT_VERSION=$(sed -n 's/^const AgentVersion = "\([^\"]*\)"$/\1/p' go-gost/version.go)
+          test -n "$AGENT_VERSION"
+          SHA_AMD64=$(sha256sum ./artifacts/release-assets/gost-amd64 | awk '{print $1}')
+          SHA_ARM64=$(sha256sum ./artifacts/release-assets/gost-arm64 | awk '{print $1}')
+          SHA_WINDOWS_AMD64=$(sha256sum ./artifacts/release-assets/gost-windows-amd64.exe | awk '{print $1}')
+          cat > ./artifacts/release-assets/agent-manifest.json <<EOF
+          {
+            "version": "$AGENT_VERSION",
+            "assets": {
+              "linux-amd64": {
+                "url": "gost-amd64",
+                "sha256": "$SHA_AMD64"
+              },
+              "linux-arm64": {
+                "url": "gost-arm64",
+                "sha256": "$SHA_ARM64"
+              },
+              "windows-amd64": {
+                "url": "gost-windows-amd64.exe",
+                "sha256": "$SHA_WINDOWS_AMD64"
+              }
+            }
+          }
+          EOF
+          gh release upload "${VERSION}" ./artifacts/release-assets/agent-manifest.json --clobber --repo "$RELEASE_REPO"
           rm -f ./artifacts/release-assets/checksums.txt
           sha256sum ./artifacts/release-assets/gost-amd64 ./artifacts/release-assets/gost-arm64 ./artifacts/release-assets/gost-windows-amd64.exe ./artifacts/release-assets/agent-manifest.json | sed 's#  ./artifacts/release-assets/##' > ./artifacts/checksums.txt
           for asset in docker-compose-v4.yml docker-compose-v6.yml install.sh install-windows.ps1 panel_install.sh; do
