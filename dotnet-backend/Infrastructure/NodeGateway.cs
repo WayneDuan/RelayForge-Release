@@ -213,7 +213,7 @@ public sealed class NodeGateway(Db db, ILogger<NodeGateway> logger, TelegramNoti
 
     private async Task SyncTunnelsForNodeAsync(long nodeId, CancellationToken cancellationToken)
     {
-        var tunnels = await db.QueryAsync("SELECT t.*,n.server_ip entry_ip,o.server_ip out_ip FROM `tunnel` t LEFT JOIN `node` n ON n.id=t.in_node_id LEFT JOIN `node` o ON o.id=t.out_node_id WHERE t.status=1 AND (t.in_node_id=@node OR t.out_node_id=@node) ORDER BY t.id", new Dictionary<string, object?> { ["node"] = nodeId }, cancellationToken);
+        var tunnels = await db.QueryAsync("SELECT t.*,n.server_ip entry_ip,o.server_ip out_ip FROM `tunnel` t LEFT JOIN `node` n ON n.id=t.in_node_id LEFT JOIN `node` o ON o.id=t.out_node_id WHERE t.in_node_id=@node OR t.out_node_id=@node ORDER BY t.id", new Dictionary<string, object?> { ["node"] = nodeId }, cancellationToken);
         foreach (var tunnel in tunnels)
         {
             var entryNodeId = DbValue.Long(tunnel, "in_node_id");

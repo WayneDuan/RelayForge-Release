@@ -203,7 +203,7 @@ public static class ForwardOperations
     {
         var limiter = await EnsureTunnelLimiterAsync(tunnel, gateway, ct);
         if (limiter.Error is not null) return limiter.Error;
-        var forwards = await db.QueryAsync("SELECT f.*,ut.id relation_id FROM `forward` f LEFT JOIN user_tunnel ut ON ut.user_id=f.user_id AND ut.tunnel_id=f.tunnel_id WHERE f.tunnel_id=@tunnel AND f.status=1 ORDER BY f.id", Domain.Params(("tunnel", DbValue.Long(tunnel, "id"))), ct);
+        var forwards = await db.QueryAsync("SELECT f.*,ut.id relation_id FROM `forward` f LEFT JOIN user_tunnel ut ON ut.user_id=f.user_id AND ut.tunnel_id=f.tunnel_id WHERE f.tunnel_id=@tunnel ORDER BY f.id", Domain.Params(("tunnel", DbValue.Long(tunnel, "id"))), ct);
         foreach (var forward in forwards)
         {
             var serviceName = $"{DbValue.Long(forward, "id")}_{DbValue.Int(forward, "user_id")}_{DbValue.Int(forward, "relation_id")}";
