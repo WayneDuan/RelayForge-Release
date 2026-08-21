@@ -147,6 +147,32 @@ func updateServices(req updateServicesRequest) error {
 	return nil
 }
 
+// syncServices makes configuration replay idempotent. A freshly installed
+// agent has no services, while a reconnecting agent may already have them.
+func syncServices(req updateServicesRequest) error {
+	if len(req.Data) == 0 {
+		return errors.New("services list cannot be empty")
+	}
+
+	for _, serviceConfig := range req.Data {
+		name := strings.TrimSpace(serviceConfig.Name)
+		if name == "" {
+			return errors.New("service name is required")
+		}
+		serviceConfig.Name = name
+		if registry.ServiceRegistry().IsRegistered(name) {
+			if err := updateServices(updateServicesRequest{Data: []config.ServiceConfig{serviceConfig}}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := createServices(createServicesRequest{Data: []config.ServiceConfig{serviceConfig}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func deleteServices(req deleteServicesRequest) error {
 
 	if len(req.Services) == 0 {

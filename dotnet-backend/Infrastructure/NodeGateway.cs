@@ -97,8 +97,21 @@ public sealed class NodeGateway(Db db, ILogger<NodeGateway> logger, TelegramNoti
             }, context.RequestAborted);
             await BroadcastAsync(JsonSerializer.Serialize(new { id = nodeId, type = "status", data = 1 }), context.RequestAborted);
             if (wasOffline) _ = telegramNotifier.NotifyNodeStatusAsync(nodeId, nodeName, true, CancellationToken.None);
-            await SyncReverseTunnelsForNodeAsync(nodeId, context.RequestAborted);
-            try { await ReadNodeLoopAsync(session, context.RequestAborted); }
+            // Start reading before replaying configuration. SendAsync waits for the
+            // agent response, so delaying the read loop would make every replay
+            // command time out.
+            var readTask = ReadNodeLoopAsync(session, context.RequestAborted);
+            try
+            {
+                await SyncTunnelsForNodeAsync(nodeId, context.RequestAborted);
+                await readTask;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "节点配置同步失败: {NodeId}", nodeId);
+                await CloseQuietly(session.Socket);
+                try { await readTask; } catch { }
+            }
             finally
             {
                 if (_nodes.TryGetValue(nodeId, out var current) && ReferenceEquals(current, session))
@@ -198,16 +211,17 @@ public sealed class NodeGateway(Db db, ILogger<NodeGateway> logger, TelegramNoti
         }
     }
 
-    private async Task SyncReverseTunnelsForNodeAsync(long nodeId, CancellationToken cancellationToken)
+    private async Task SyncTunnelsForNodeAsync(long nodeId, CancellationToken cancellationToken)
     {
-        var tunnels = await db.QueryAsync("SELECT t.*,n.server_ip entry_ip,o.server_ip out_ip FROM `tunnel` t LEFT JOIN `node` n ON n.id=t.in_node_id LEFT JOIN `node` o ON o.id=t.out_node_id WHERE t.type=3 AND (t.in_node_id=@node OR t.out_node_id=@node)", new Dictionary<string, object?> { ["node"] = nodeId }, cancellationToken);
+        var tunnels = await db.QueryAsync("SELECT t.*,n.server_ip entry_ip,o.server_ip out_ip FROM `tunnel` t LEFT JOIN `node` n ON n.id=t.in_node_id LEFT JOIN `node` o ON o.id=t.out_node_id WHERE t.status=1 AND (t.in_node_id=@node OR t.out_node_id=@node) ORDER BY t.id", new Dictionary<string, object?> { ["node"] = nodeId }, cancellationToken);
         foreach (var tunnel in tunnels)
         {
             var entryNodeId = DbValue.Long(tunnel, "in_node_id");
-            var windowsNodeId = DbValue.Long(tunnel, "out_node_id");
-            if (!_nodes.ContainsKey(entryNodeId) || !_nodes.ContainsKey(windowsNodeId)) continue;
+            var outNodeId = DbValue.Long(tunnel, "out_node_id");
+            var tunnelType = DbValue.Int(tunnel, "type");
+            if (!_nodes.ContainsKey(entryNodeId) || (tunnelType is 2 or 3) && !_nodes.ContainsKey(outNodeId)) continue;
             var error = await ForwardOperations.SyncTunnelAsync(tunnel, db, this, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(error)) logger.LogWarning("反向隧道同步失败: {TunnelId}: {Error}", DbValue.Long(tunnel, "id"), error);
+            if (!string.IsNullOrWhiteSpace(error)) logger.LogWarning("隧道同步失败: {TunnelId}: {Error}", DbValue.Long(tunnel, "id"), error);
         }
     }
 

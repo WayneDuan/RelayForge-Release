@@ -545,6 +545,9 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 	case "UpdateService":
 		err = w.handleUpdateService(cmd.Data)
 		response.Type = "UpdateServiceResponse"
+	case "SyncService":
+		err = w.handleSyncService(cmd.Data)
+		response.Type = "SyncServiceResponse"
 	case "DeleteService":
 		err = w.handleDeleteService(cmd.Data)
 		response.Type = "DeleteServiceResponse"
@@ -667,6 +670,25 @@ func (w *WebSocketReporter) handleUpdateService(data interface{}) error {
 	return updateServices(req)
 }
 
+func (w *WebSocketReporter) handleSyncService(data interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("序列化数据失败: %v", err)
+	}
+
+	processedData, err := w.preprocessDurationFields(jsonData)
+	if err != nil {
+		return fmt.Errorf("预处理duration字段失败: %v", err)
+	}
+
+	var services []config.ServiceConfig
+	if err := json.Unmarshal(processedData, &services); err != nil {
+		return fmt.Errorf("解析服务配置失败: %v", err)
+	}
+
+	return syncServices(updateServicesRequest{Data: services})
+}
+
 func (w *WebSocketReporter) handleDeleteService(data interface{}) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
@@ -737,15 +759,19 @@ func (w *WebSocketReporter) handleUpdateChain(data interface{}) error {
 		Data  config.ChainConfig `json:"data"`
 	}
 
-	// 尝试解析为更新请求格式
-	if err := json.Unmarshal(jsonData, &updateReq); err != nil {
-		// 如果失败，可能是直接的ChainConfig，从name字段获取chain名称
+	// 尝试解析为更新请求格式。直接传入 ChainConfig 时 Unmarshal
+	// 本身不会报错，因此还要检查 chain/data 是否实际存在。
+	if err := json.Unmarshal(jsonData, &updateReq); err != nil || updateReq.Chain == "" {
+		// 如果不是包装格式，直接从 ChainConfig 的 name 字段获取名称
 		var chainConfig config.ChainConfig
 		if err := json.Unmarshal(jsonData, &chainConfig); err != nil {
 			return fmt.Errorf("解析链配置失败: %v", err)
 		}
 		updateReq.Chain = chainConfig.Name
 		updateReq.Data = chainConfig
+	}
+	if updateReq.Data.Name == "" {
+		updateReq.Data.Name = updateReq.Chain
 	}
 
 	req := updateChainRequest{
