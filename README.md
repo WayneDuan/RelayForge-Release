@@ -264,6 +264,14 @@ RELAYFORGE_RELEASE_BASE_URL=https://download.example.com/relayforge ./panel_inst
 
 如果所在网络必须通过下载代理，使用 `RELAYFORGE_RELEASE_MIRROR` 显式指定代理前缀；脚本不会再根据 IP 自动选择第三方镜像。代理应当能够安全转发原始 HTTPS 发布地址，并且仍会通过 `checksums.txt` 校验下载内容。
 
+面板生成的节点安装命令可以通过 Compose 环境变量统一走同一个 HTTPS 代理前缀。在面板服务器的 `.env` 中加入：
+
+~~~dotenv
+PANEL_RELEASE_MIRROR=https://mirror.example
+~~~
+
+代理需要把后面的原始 GitHub 发布地址转发出去，例如请求 `https://mirror.example/https://github.com/WayneDuan/RelayForge-Release/releases/latest/download/install.sh`，并保持原始文件内容不变。更新面板后重新复制节点安装命令即可；命令仍会校验 `checksums.txt`。
+
 Linux Agent 的自动升级清单可以单独指定：
 
 ~~~bash

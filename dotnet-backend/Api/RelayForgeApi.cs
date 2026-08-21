@@ -256,6 +256,11 @@ app.MapPost("/api/v1/node/install", async (NodeInstallRequest request, HttpConte
     var script = app.Configuration["Panel:InstallScriptUrl"] ?? "https://github.com/WayneDuan/RelayForge-Release/releases/latest/download/install.sh";
     var releaseBase = app.Configuration["Panel:ReleaseBaseUrl"] ?? "https://github.com/WayneDuan/RelayForge-Release/releases/latest/download";
     var checksums = app.Configuration["Panel:ChecksumsUrl"] ?? "https://github.com/WayneDuan/RelayForge-Release/releases/latest/download/checksums.txt";
+    var releaseMirror = app.Configuration["Panel:ReleaseMirror"]?.Trim();
+    if (!string.IsNullOrWhiteSpace(releaseMirror) && !IsHttpsUrl(releaseMirror)) return Api.Error("Panel:ReleaseMirror must be an HTTPS URL");
+    var mirroredScript = MirrorReleaseUrl(script, releaseMirror);
+    var mirroredReleaseBase = MirrorReleaseUrl(releaseBase, releaseMirror);
+    var mirroredChecksums = MirrorReleaseUrl(checksums, releaseMirror);
     var configuredHost = Convert.ToString(await db.ScalarAsync("SELECT value FROM vite_config WHERE name=@name LIMIT 1", Domain.Params(("name", "panel_host")), ct))?.Trim();
     var configuredPort = Convert.ToString(await db.ScalarAsync("SELECT value FROM vite_config WHERE name=@name LIMIT 1", Domain.Params(("name", "backend_port")), ct))?.Trim();
     var configuredSecurePort = Convert.ToString(await db.ScalarAsync("SELECT value FROM vite_config WHERE name=@name LIMIT 1", Domain.Params(("name", "secure_port")), ct))?.Trim();
@@ -267,9 +272,9 @@ app.MapPost("/api/v1/node/install", async (NodeInstallRequest request, HttpConte
         var windowsScript = app.Configuration["Panel:WindowsInstallScriptUrl"] ?? "https://github.com/WayneDuan/RelayForge-Release/releases/latest/download/install-windows.ps1";
         var scriptPath = "$scriptPath = Join-Path $env:TEMP 'relayforge-agent-install.ps1'";
         var checksumsPath = "$checksumsPath = Join-Path $env:TEMP 'relayforge-agent-checksums.txt'";
-        return Api.Ok($"{scriptPath}; {checksumsPath}; Invoke-WebRequest -UseBasicParsing -Uri {PowerShellQuote(windowsScript)} -OutFile $scriptPath; Invoke-WebRequest -UseBasicParsing -Uri {PowerShellQuote(checksums)} -OutFile $checksumsPath; $checksumLine = (Select-String -LiteralPath $checksumsPath -Pattern '  install-windows\\.ps1$' | Select-Object -First 1).Line; if ([string]::IsNullOrWhiteSpace($checksumLine)) {{ throw 'The install script checksum is missing.' }}; $expectedHash = ($checksumLine -split '\\s+')[0].ToUpperInvariant(); $actualHash = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToUpperInvariant(); if ($actualHash -ne $expectedHash) {{ throw 'The install script checksum does not match.' }}; & $scriptPath -PanelAddress {PowerShellQuote(panelAddress)} -Secret {PowerShellQuote(DbValue.String(rows[0], "secret"))} -ReleaseBaseUrl {PowerShellQuote(releaseBase)}");
+        return Api.Ok($"{scriptPath}; {checksumsPath}; Invoke-WebRequest -UseBasicParsing -Uri {PowerShellQuote(MirrorReleaseUrl(windowsScript, releaseMirror))} -OutFile $scriptPath; Invoke-WebRequest -UseBasicParsing -Uri {PowerShellQuote(mirroredChecksums)} -OutFile $checksumsPath; $checksumLine = (Select-String -LiteralPath $checksumsPath -Pattern '  install-windows\\.ps1$' | Select-Object -First 1).Line; if ([string]::IsNullOrWhiteSpace($checksumLine)) {{ throw 'The install script checksum is missing.' }}; $expectedHash = ($checksumLine -split '\\s+')[0].ToUpperInvariant(); $actualHash = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToUpperInvariant(); if ($actualHash -ne $expectedHash) {{ throw 'The install script checksum does not match.' }}; & $scriptPath -PanelAddress {PowerShellQuote(panelAddress)} -Secret {PowerShellQuote(DbValue.String(rows[0], "secret"))} -ReleaseBaseUrl {PowerShellQuote(mirroredReleaseBase)}");
     }
-    return Api.Ok($"curl --fail --location --proto '=https' --tlsv1.2 {ShellQuote(script)} -o ./install.sh && curl --fail --location --proto '=https' --tlsv1.2 {ShellQuote(checksums)} -o ./checksums.txt && grep '  install.sh$' ./checksums.txt | sha256sum -c - && chmod +x ./install.sh && RELAYFORGE_RELEASE_BASE_URL={ShellQuote(releaseBase)} ./install.sh -a {ShellQuote(panelAddress)} -s {ShellQuote(DbValue.String(rows[0], "secret"))}");
+    return Api.Ok($"curl --fail --location --proto '=https' --tlsv1.2 {ShellQuote(mirroredScript)} -o ./install.sh && curl --fail --location --proto '=https' --tlsv1.2 {ShellQuote(mirroredChecksums)} -o ./checksums.txt && grep '  install.sh$' ./checksums.txt | sha256sum -c - && chmod +x ./install.sh && RELAYFORGE_RELEASE_BASE_URL={ShellQuote(mirroredReleaseBase)} ./install.sh -a {ShellQuote(panelAddress)} -s {ShellQuote(DbValue.String(rows[0], "secret"))}");
 });
 app.MapPost("/api/v1/node/check-status", async (JsonElement request, HttpContext context, Db db, CancellationToken ct) =>
 {
@@ -719,6 +724,8 @@ static string? BuildPanelAddress(HttpContext context, string? configuredHost, st
 
 static string ShellQuote(string value) => $"'{value.Replace("'", "'\"'\"'")}'";
 static string PowerShellQuote(string value) => $"'{value.Replace("'", "''")}'";
+static bool IsHttpsUrl(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && !string.IsNullOrWhiteSpace(uri.Host);
+static string MirrorReleaseUrl(string url, string? mirror) => string.IsNullOrWhiteSpace(mirror) ? url : $"{mirror.TrimEnd('/')}/{url}";
     }
 }
 
