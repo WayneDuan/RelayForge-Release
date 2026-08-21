@@ -238,6 +238,61 @@ public static class ForwardOperations
         return null;
     }
 
+    public static async Task<string?> SyncTunnelForNodeAsync(IReadOnlyDictionary<string, object?> tunnel, long nodeId, Db db, NodeGateway gateway, CancellationToken ct)
+    {
+        var type = DbValue.Int(tunnel, "type");
+        var inNodeId = DbValue.Long(tunnel, "in_node_id");
+        var outNodeId = DbValue.Long(tunnel, "out_node_id");
+        var isInNode = nodeId == inNodeId;
+        var isOutNode = nodeId == outNodeId;
+        if (!isInNode && !isOutNode) return null;
+
+        var limiter = await EnsureTunnelLimiterForNodeAsync(tunnel, nodeId, gateway, ct);
+        if (limiter.Error is not null) return limiter.Error;
+        var forwards = await db.QueryAsync("SELECT f.*,ut.id relation_id FROM `forward` f LEFT JOIN user_tunnel ut ON ut.user_id=f.user_id AND ut.tunnel_id=f.tunnel_id WHERE f.tunnel_id=@tunnel ORDER BY f.id", Domain.Params(("tunnel", DbValue.Long(tunnel, "id"))), ct);
+        foreach (var forward in forwards)
+        {
+            var serviceName = $"{DbValue.Long(forward, "id")}_{DbValue.Int(forward, "user_id")}_{DbValue.Int(forward, "relation_id")}";
+            if (type == 1 || isInNode && (type is 2 or 3))
+            {
+                var command = type == 3
+                    ? new[] { GostProtocol.ReverseRelayService(serviceName, DbValue.NullableInt(forward, "out_port") ?? 0, DbValue.String(tunnel, "protocol"), limiter.Name, DbValue.String(forward, "interface_name"), DbValue.String(tunnel, "anytls_password"), RelayUsername(serviceName), DbValue.String(forward, "relay_secret")) }
+                    : BuildServices(serviceName, tunnel, DbValue.String(forward, "remote_addr"), DbValue.Int(forward, "in_port"), limiter.Name, DbValue.String(forward, "strategy"), DbValue.String(forward, "interface_name"));
+                var response = await gateway.SendAsync(nodeId, "SyncService", command, ct);
+                if (!response.Success) return response.Message;
+            }
+
+            if (type == 2 && isOutNode)
+            {
+                var outPort = DbValue.NullableInt(forward, "out_port") ?? 0;
+                var remote = GostProtocol.RemoteService(serviceName, outPort, DbValue.String(forward, "remote_addr"), DbValue.String(tunnel, "protocol"), DbValue.String(forward, "strategy"), limiter.Name, DbValue.String(forward, "interface_name"), DbValue.String(tunnel, "anytls_password"));
+                var response = await gateway.SendAsync(nodeId, "SyncService", new[] { remote }, ct);
+                if (!response.Success) return response.Message;
+            }
+
+            if (type == 2 && isInNode)
+            {
+                var outPort = DbValue.NullableInt(forward, "out_port") ?? 0;
+                var chain = GostProtocol.Chain(serviceName, $"{DbValue.String(tunnel, "out_ip")}:{outPort}", DbValue.String(tunnel, "protocol"), DbValue.String(forward, "interface_name"), DbValue.String(tunnel, "anytls_password"));
+                var response = await SyncChainAsync(gateway, nodeId, chain, ct);
+                if (!response.Success) return response.Message;
+            }
+
+            if (type == 3 && isOutNode)
+            {
+                if (DbValue.String(tunnel, "protocol") != "quic")
+                    await gateway.SendAsync(nodeId, "DeleteService", new { services = new[] { $"{serviceName}_udp" } }, ct);
+                var chain = GostProtocol.Chain(serviceName, $"{DbValue.String(tunnel, "entry_ip")}:{DbValue.NullableInt(forward, "out_port") ?? 0}", DbValue.String(tunnel, "protocol"), DbValue.String(forward, "interface_name"), DbValue.String(tunnel, "anytls_password"), RelayUsername(serviceName), DbValue.String(forward, "relay_secret"));
+                var chainResponse = await SyncChainAsync(gateway, nodeId, chain, ct);
+                if (!chainResponse.Success) return chainResponse.Message;
+                var reverse = GostProtocol.ReverseServices(serviceName, DbValue.Int(forward, "in_port"), DbValue.String(forward, "remote_addr"), DbValue.String(forward, "strategy"), DbValue.String(tunnel, "protocol"), limiter.Name, DbValue.String(forward, "interface_name"));
+                var reverseResponse = await gateway.SendAsync(nodeId, "SyncService", reverse, ct);
+                if (!reverseResponse.Success) return reverseResponse.Message;
+            }
+        }
+        return null;
+    }
+
     private static async Task<NodeResponse> SyncChainAsync(NodeGateway gateway, long nodeId, object chain, CancellationToken ct)
     {
         var response = await gateway.SendAsync(nodeId, "UpdateChains", chain, ct);
@@ -269,6 +324,18 @@ public static class ForwardOperations
             if (!remoteResponse.Success) remoteResponse = await gateway.SendAsync(DbValue.Long(tunnel, "out_node_id"), "UpdateLimiters", new { limiter = name, data }, ct);
             if (!remoteResponse.Success) return (null, remoteResponse.Message);
         }
+        return response.Success ? (name, null) : (null, response.Message);
+    }
+
+    private static async Task<(string? Name, string? Error)> EnsureTunnelLimiterForNodeAsync(IReadOnlyDictionary<string, object?> tunnel, long nodeId, NodeGateway gateway, CancellationToken ct)
+    {
+        var speed = DbValue.Int(tunnel, "speed_limit_kbps");
+        if (speed <= 0) return (null, null);
+        var name = $"relayforge_tunnel_{DbValue.Long(tunnel, "id")}";
+        var bytes = speed * 1024L;
+        var data = new { name, limits = new[] { $"$ {bytes} {bytes}" } };
+        var response = await gateway.SendAsync(nodeId, "AddLimiters", data, ct);
+        if (!response.Success) response = await gateway.SendAsync(nodeId, "UpdateLimiters", new { limiter = name, data }, ct);
         return response.Success ? (name, null) : (null, response.Message);
     }
 }
